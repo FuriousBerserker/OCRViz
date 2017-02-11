@@ -14,7 +14,8 @@ public:
 	enum Type {
 		EDT,
 		DB,
-		EVENT
+		EVENT,
+		INTERNAL
 	};
 public:
 	ocrGuid_t id;
@@ -36,10 +37,15 @@ public:
 
 map<ocrGuid_t, Node*> computationGraph;
 
-Node::Node(ocrGuid_t id, uint32_t depc, ocrGuid_t* depv, Node::Type type): id(id), deps(depc), type(type) {
+Node::Node(ocrGuid_t id, uint32_t depc, ocrGuid_t* depv, Node::Type type): id(id), type(type) {
+	deps.reserve(depc);
 	if (depv != NULL) {
 		for (uint32_t i = 0; i < depc; i++) {
-			deps.push_back(computationGraph[*(depv + i)]);
+			ocrGuid_t dep = *(depv + i);
+			if (computationGraph.find(dep) == computationGraph.end()) {
+				computationGraph[dep] = new Node(dep, 0, NULL, Node::INTERNAL);	
+			}
+			deps.push_back(computationGraph[dep]);
 		}
 	}
 }
@@ -67,8 +73,13 @@ void argsMainEdt(uint32_t paramc, uint64_t* paramv, uint32_t depc, ocrEdtDep_t d
 #if DEBUG
 	cout << "argsMainEdt" << endl;
 #endif
-	Node* mainEdtNode = new Node(0, 0, NULL, Node::EDT);
+	ocrGuid_t* depIdv = new ocrGuid_t[depc];
+	for (uint32_t i = 0; i < depc; i++) {
+		depIdv[i] = depv[i].guid;
+	}
+	Node* mainEdtNode = new Node(0, depc, depIdv, Node::EDT);
 	computationGraph[mainEdtNode->id] = mainEdtNode;
+	delete[] depIdv;
 }
 
 void argsDbCreate(ocrGuid_t* guid, void** addr, uint64_t len, uint16_t flags, ocrGuid_t affinity, ocrInDbAllocator_t allocator) {
@@ -88,6 +99,16 @@ void argsEdtCreate(ocrGuid_t* guid, ocrGuid_t templateGuid, uint32_t paramc, uin
 #if DEBUG
 	cout << "argsEdtCreate" << endl;
 #endif
+	if (depc >= 0xFFFFFFFE) {
+		uint32_t trueDepc = 0;
+		for (uint32_t i = 0; i < depc; i++) {
+			if (! *(depv + i)) {
+				break;
+			}
+			trueDepc++;
+		}
+		depc = trueDepc;
+	}
 	THREADID threadid = PIN_ThreadId();
 	ThreadData* threadData = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, threadid));
 	PIN_GetLock(&pinLock, threadid);
@@ -95,6 +116,7 @@ void argsEdtCreate(ocrGuid_t* guid, ocrGuid_t templateGuid, uint32_t paramc, uin
 	threadData->latestNode = newEdtNode;
 	threadData->guid = guid;
 	PIN_ReleaseLock(&pinLock);
+
 }
 
 void argsEventCreate(ocrGuid_t* guid, ocrEventTypes_t eventType, uint16_t flags) {
@@ -114,7 +136,14 @@ void argsAddDependence(ocrGuid_t source, ocrGuid_t destination, uint32_t slot, o
 #if DEBUG
 	cout << "argsAddDependence" << endl;
 #endif
+	cout << source << "->" << destination << endl;
 	PIN_GetLock(&pinLock, PIN_ThreadId());
+	if (computationGraph.find(source) == computationGraph.end()) {
+		computationGraph[source] = new Node(source, 0, NULL, Node::INTERNAL);
+	}
+	if (computationGraph.find(destination) == computationGraph.end()) {
+		computationGraph[destination] = new Node(destination, 0, NULL, Node::INTERNAL);
+	}
 	computationGraph[destination]->deps.push_back(computationGraph[source]);
 	PIN_ReleaseLock(&pinLock);
 }
@@ -126,8 +155,10 @@ void afterEdtCreate() {
 	THREADID threadid = PIN_ThreadId();
 	ThreadData* threadData = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, threadid));
 	Node* node = threadData->latestNode;
-	node->id = *threadData->guid;
-	computationGraph[node->id] = node;
+	if (node) {
+		node->id = *threadData->guid;
+		computationGraph[node->id] = node;
+	}
 }
 
 void afterDbCreate() {
@@ -153,13 +184,19 @@ void afterEventCreate() {
 }
 
 void CG2Dot() {
+#if DEBUG
+	cout << "CG2Dot" << endl;
+#endif
 	ofstream out;
 	out.open("cg.dot");
-	out << "graph ComputationGraph {" << endl;
+	out << "digraph ComputationGraph {" << endl;
+	cout << computationGraph.size() << endl;
 	for (map<ocrGuid_t, Node*>::iterator ci = computationGraph.begin(), ce = computationGraph.end(); ci != ce; ci++) {
+		cout << (uint64_t)ci->second << endl;
 		Node* node = ci->second;
 		for (vector<Node*>::iterator ni = node->deps.begin(), ne = node->deps.end(); ni != ne; ni++) {
-			out << 	(*ni)->id << " -- " << node->id << endl;
+			out << 	(*ni)->id << " -> " << node->id << ";" << endl;
+			//cout << (uint64_t)node << "<-----" << (uint64_t)*ni << endl;
 		}	
 	}
 	out << "}";
@@ -231,11 +268,17 @@ void img(IMG img, void* v) {
 }
 
 void threadStart(THREADID threadid, CONTEXT* cxt, int32_t flags, void* v) {
+#if DEBUG
+	cout << "thread start" << endl;
+#endif
 	ThreadData* threadData = new ThreadData(NULL, NULL);
 	PIN_SetThreadData(tls_key, threadData, threadid);
 }
 
 void fini(int code, void* v) {
+#if DEBUG
+	cout << "fini" << endl;
+#endif
 	CG2Dot();
 	for (map<ocrGuid_t, Node*>::iterator ci = computationGraph.begin(), ce = computationGraph.end(); ci != ce; ci++) {
 		delete ci->second;

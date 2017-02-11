@@ -6,3 +6,5 @@ EXE_POS=$OCR_HOME/examples/$1/install/x86/$1
 echo $OCR_HOME/examples/$1/install/x86/$1
 
 pin -t obj-intel64/OCRViz.so -- $EXE_POS
+dot -Tpdf -o cg.pdf cg.dot
+see cg.pdf
