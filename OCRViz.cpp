@@ -2,12 +2,23 @@
 #include <iostream>
 #include <fstream>
 #include <map>
+#include <string>
 #include "pin.H"
 #include "ocr-types.h"
 
 #define DEBUG 1
 
 using namespace::std;
+
+class ColorScheme {
+public:
+	string color;
+	string style;
+	ColorScheme(string color, string style);
+	ColorScheme();
+	virtual ~ColorScheme();
+	string toString();
+};
 
 class Node {
 public:
@@ -36,6 +47,23 @@ public:
 };
 
 map<ocrGuid_t, Node*> computationGraph;
+
+map<Node::Type, ColorScheme> colorSchemes;
+
+ColorScheme::ColorScheme(string color, string style): color(color), style(style) {
+
+}
+
+ColorScheme::ColorScheme() {
+}
+
+ColorScheme::~ColorScheme() {
+
+}
+
+string ColorScheme::toString() {
+	return "[color=" + color + ", style=" + style + "]"; 
+}
 
 Node::Node(ocrGuid_t id, uint32_t depc, ocrGuid_t* depv, Node::Type type): id(id), type(type) {
 	deps.reserve(depc);
@@ -73,49 +101,49 @@ void argsMainEdt(uint32_t paramc, uint64_t* paramv, uint32_t depc, ocrEdtDep_t d
 #if DEBUG
 	cout << "argsMainEdt" << endl;
 #endif
-	ocrGuid_t* depIdv = new ocrGuid_t[depc];
-	for (uint32_t i = 0; i < depc; i++) {
-		depIdv[i] = depv[i].guid;
-	}
-	Node* mainEdtNode = new Node(0, depc, depIdv, Node::EDT);
-	computationGraph[mainEdtNode->id] = mainEdtNode;
-	delete[] depIdv;
+//	ocrGuid_t* depIdv = new ocrGuid_t[depc];
+//	for (uint32_t i = 0; i < depc; i++) {
+//		depIdv[i] = depv[i].guid;
+//	}
+//	Node* mainEdtNode = new Node(0, depc, depIdv, Node::EDT);
+//	computationGraph[mainEdtNode->id] = mainEdtNode;
+//	delete[] depIdv;
 }
 
 void argsDbCreate(ocrGuid_t* guid, void** addr, uint64_t len, uint16_t flags, ocrGuid_t affinity, ocrInDbAllocator_t allocator) {
 #if DEBUG
 	cout << "argsDbCreate" << endl;
 #endif
-	THREADID threadid = PIN_ThreadId();
-	ThreadData* threadData = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, threadid));
-	PIN_GetLock(&pinLock, threadid);
-	Node* newDbNode = new Node(*guid, 0, NULL, Node::DB);
-	threadData->latestNode = newDbNode;
-	threadData->guid = guid;
-	PIN_ReleaseLock(&pinLock);
+//	THREADID threadid = PIN_ThreadId();
+//	ThreadData* threadData = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, threadid));
+//	PIN_GetLock(&pinLock, threadid);
+//	Node* newDbNode = new Node(*guid, 0, NULL, Node::DB);
+//	threadData->latestNode = newDbNode;
+//	threadData->guid = guid;
+//	PIN_ReleaseLock(&pinLock);
 }
 
 void argsEdtCreate(ocrGuid_t* guid, ocrGuid_t templateGuid, uint32_t paramc, uint64_t* paramv, uint32_t depc, ocrGuid_t* depv, uint16_t flags, ocrGuid_t affinity, ocrGuid_t* outputEvent) {
 #if DEBUG
 	cout << "argsEdtCreate" << endl;
 #endif
-	if (depc >= 0xFFFFFFFE) {
-		uint32_t trueDepc = 0;
-		for (uint32_t i = 0; i < depc; i++) {
-			if (! *(depv + i)) {
-				break;
-			}
-			trueDepc++;
-		}
-		depc = trueDepc;
-	}
-	THREADID threadid = PIN_ThreadId();
-	ThreadData* threadData = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, threadid));
-	PIN_GetLock(&pinLock, threadid);
-	Node* newEdtNode = new Node(*guid, depc, depv, Node::EDT);
-	threadData->latestNode = newEdtNode;
-	threadData->guid = guid;
-	PIN_ReleaseLock(&pinLock);
+//	if (depc >= 0xFFFFFFFE) {
+//		uint32_t trueDepc = 0;
+//		for (uint32_t i = 0; i < depc; i++) {
+//			if (! *(depv + i)) {
+//				break;
+//			}
+//			trueDepc++;
+//		}
+//		depc = trueDepc;
+//	}
+//	THREADID threadid = PIN_ThreadId();
+//	ThreadData* threadData = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, threadid));
+//	PIN_GetLock(&pinLock, threadid);
+//	Node* newEdtNode = new Node(*guid, depc, depv, Node::EDT);
+//	threadData->latestNode = newEdtNode;
+//	threadData->guid = guid;
+//	PIN_ReleaseLock(&pinLock);
 
 }
 
@@ -123,64 +151,68 @@ void argsEventCreate(ocrGuid_t* guid, ocrEventTypes_t eventType, uint16_t flags)
 #if DEBUG
 	cout << "argsEventCreate" << endl;
 #endif
-	THREADID threadid = PIN_ThreadId();
-	ThreadData* threadData = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, threadid));
-	PIN_GetLock(&pinLock, threadid);
-	Node* newEventNode = new Node(*guid, 0, NULL, Node::EVENT);
-	threadData->latestNode = newEventNode;
-	threadData->guid = guid;
-	PIN_ReleaseLock(&pinLock);
+//	THREADID threadid = PIN_ThreadId();
+//	ThreadData* threadData = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, threadid));
+//	PIN_GetLock(&pinLock, threadid);
+//	Node* newEventNode = new Node(*guid, 0, NULL, Node::EVENT);
+//	threadData->latestNode = newEventNode;
+//	threadData->guid = guid;
+//	PIN_ReleaseLock(&pinLock);
 }
 
 void argsAddDependence(ocrGuid_t source, ocrGuid_t destination, uint32_t slot, ocrDbAccessMode_t mode) {
 #if DEBUG
 	cout << "argsAddDependence" << endl;
 #endif
-	cout << source << "->" << destination << endl;
-	PIN_GetLock(&pinLock, PIN_ThreadId());
-	if (computationGraph.find(source) == computationGraph.end()) {
-		computationGraph[source] = new Node(source, 0, NULL, Node::INTERNAL);
-	}
-	if (computationGraph.find(destination) == computationGraph.end()) {
-		computationGraph[destination] = new Node(destination, 0, NULL, Node::INTERNAL);
-	}
-	computationGraph[destination]->deps.push_back(computationGraph[source]);
-	PIN_ReleaseLock(&pinLock);
+//	cout << source << "->" << destination << endl;
+//	PIN_GetLock(&pinLock, PIN_ThreadId());
+//	if (computationGraph.find(source) == computationGraph.end()) {
+//		computationGraph[source] = new Node(source, 0, NULL, Node::INTERNAL);
+//	}
+//	if (computationGraph.find(destination) == computationGraph.end()) {
+//		computationGraph[destination] = new Node(destination, 0, NULL, Node::INTERNAL);
+//	}
+//	computationGraph[destination]->deps.push_back(computationGraph[source]);
+//	PIN_ReleaseLock(&pinLock);
 }
 
 void afterEdtCreate() {
 #if DEBUG
 	cout << "afterEdtCreate" << endl;
 #endif
-	THREADID threadid = PIN_ThreadId();
-	ThreadData* threadData = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, threadid));
-	Node* node = threadData->latestNode;
-	if (node) {
-		node->id = *threadData->guid;
-		computationGraph[node->id] = node;
-	}
+//	THREADID threadid = PIN_ThreadId();
+//	ThreadData* threadData = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, threadid));
+//	Node* node = threadData->latestNode;
+//	node->id = *threadData->guid;
+//	PIN_GetLock(&pinLock, threadid);
+//	computationGraph[node->id] = node;
+//	PIN_ReleaseLock(&pinLock);
 }
 
 void afterDbCreate() {
 #if DEBUG
 	cout << "afterDbCreate" << endl;
 #endif
-	THREADID threadid = PIN_ThreadId();
-	ThreadData* threadData = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, threadid));
-	Node* node = threadData->latestNode;
-	node->id = *threadData->guid;
-	computationGraph[node->id] = node;
+//	THREADID threadid = PIN_ThreadId();
+//	ThreadData* threadData = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, threadid));
+//	Node* node = threadData->latestNode;
+//	node->id = *threadData->guid;
+//	PIN_GetLock(&pinLock, threadid);
+//	computationGraph[node->id] = node;
+//	PIN_ReleaseLock(&pinLock);
 }
 
 void afterEventCreate() {
 #if DEBUG
 	cout << "afterEdtCreate" << endl;
 #endif
-	THREADID threadid = PIN_ThreadId();
-	ThreadData* threadData = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, threadid));
-	Node* node = threadData->latestNode;
-	node->id = *threadData->guid;
-	computationGraph[node->id] = node;
+//	THREADID threadid = PIN_ThreadId();
+//	ThreadData* threadData = static_cast<ThreadData*>(PIN_GetThreadData(tls_key, threadid));
+//	Node* node = threadData->latestNode;
+//	node->id = *threadData->guid;
+//	PIN_GetLock(&pinLock, threadid);
+//	computationGraph[node->id] = node;
+//	PIN_ReleaseLock(&pinLock);
 }
 
 void CG2Dot() {
@@ -191,6 +223,10 @@ void CG2Dot() {
 	out.open("cg.dot");
 	out << "digraph ComputationGraph {" << endl;
 	cout << computationGraph.size() << endl;
+	for (map<ocrGuid_t, Node*>::iterator ci = computationGraph.begin(), ce = computationGraph.end(); ci != ce; ci++) {
+		Node* node = ci->second;
+		out<< node->id << colorSchemes[node->type].toString() << ";" << endl; 
+	}
 	for (map<ocrGuid_t, Node*>::iterator ci = computationGraph.begin(), ce = computationGraph.end(); ci != ce; ci++) {
 		cout << (uint64_t)ci->second << endl;
 		Node* node = ci->second;
@@ -215,7 +251,7 @@ void img(IMG img, void* v) {
 	cout << "instrument mainEdt" << endl;
 #endif
 		RTN_Open(mainEdtRTN);
-		RTN_InsertCall(mainEdtRTN, IPOINT_BEFORE, (AFUNPTR)argsMainEdt, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3, IARG_END);
+//		RTN_InsertCall(mainEdtRTN, IPOINT_BEFORE, (AFUNPTR)argsMainEdt, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3, IARG_END);
 		RTN_Close(mainEdtRTN);
 	}
 
@@ -226,8 +262,8 @@ void img(IMG img, void* v) {
 	cout << "instrument ocrEdtCreate" << endl;
 #endif
 		RTN_Open(edtCreateRTN);
-		RTN_InsertCall(edtCreateRTN, IPOINT_BEFORE, (AFUNPTR)argsEdtCreate, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3, IARG_FUNCARG_ENTRYPOINT_VALUE, 4, IARG_FUNCARG_ENTRYPOINT_VALUE, 5, IARG_FUNCARG_ENTRYPOINT_VALUE, 6, IARG_FUNCARG_ENTRYPOINT_VALUE, 7, IARG_FUNCARG_ENTRYPOINT_VALUE, 8, IARG_END);
-		RTN_InsertCall(edtCreateRTN, IPOINT_AFTER, (AFUNPTR)afterEdtCreate, IARG_END);
+//		RTN_InsertCall(edtCreateRTN, IPOINT_BEFORE, (AFUNPTR)argsEdtCreate, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3, IARG_FUNCARG_ENTRYPOINT_VALUE, 4, IARG_FUNCARG_ENTRYPOINT_VALUE, 5, IARG_FUNCARG_ENTRYPOINT_VALUE, 6, IARG_FUNCARG_ENTRYPOINT_VALUE, 7, IARG_FUNCARG_ENTRYPOINT_VALUE, 8, IARG_END);
+//		RTN_InsertCall(edtCreateRTN, IPOINT_AFTER, (AFUNPTR)afterEdtCreate, IARG_END);
 		RTN_Close(edtCreateRTN);
 	}
 
@@ -250,8 +286,8 @@ void img(IMG img, void* v) {
 	cout << "instrument ocrEventCreate" << endl;
 #endif
 		RTN_Open(eventCreateRTN);
-		RTN_InsertCall(eventCreateRTN, IPOINT_BEFORE, (AFUNPTR)argsEventCreate, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_END);
-		RTN_InsertCall(eventCreateRTN, IPOINT_AFTER, (AFUNPTR)afterEventCreate, IARG_END);
+//		RTN_InsertCall(eventCreateRTN, IPOINT_BEFORE, (AFUNPTR)argsEventCreate, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_END);
+//		RTN_InsertCall(eventCreateRTN, IPOINT_AFTER, (AFUNPTR)afterEventCreate, IARG_END);
 		RTN_Close(eventCreateRTN);
 	}
 
@@ -262,7 +298,7 @@ void img(IMG img, void* v) {
 	cout << "instrument ocrAddDependence" << endl;
 #endif
 		RTN_Open(addDependenceRTN);
-		RTN_InsertCall(addDependenceRTN, IPOINT_BEFORE, (AFUNPTR)argsAddDependence, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3);
+//		RTN_InsertCall(addDependenceRTN, IPOINT_BEFORE, (AFUNPTR)argsAddDependence, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3, IARG_END);
 		RTN_Close(addDependenceRTN);
 	}
 }
@@ -285,6 +321,18 @@ void fini(int code, void* v) {
 	}
 }
 
+void initColorScheme() {
+	ColorScheme a("green", "filled"), b("yellow", "filled"), c("blue", "filled"), d("black", "filled");
+	colorSchemes[Node::EDT] = a;
+	colorSchemes[Node::DB] = b;
+	colorSchemes[Node::EVENT] = c;
+	colorSchemes[Node::INTERNAL] = d;
+}
+
+void init() {
+	initColorScheme();
+}
+
 int main(int argc, char* argv[]) {
 	PIN_InitLock(&pinLock);
 	tls_key = PIN_CreateThreadDataKey(NULL);
@@ -295,6 +343,7 @@ int main(int argc, char* argv[]) {
 	IMG_AddInstrumentFunction(img, 0);
 	PIN_AddThreadStartFunction(threadStart, 0);
 	PIN_AddFiniFunction(fini, 0);
+	init();
 	PIN_StartProgram();
 	return 0;
 }
