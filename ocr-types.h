@@ -39,7 +39,7 @@ typedef int8_t   s8;  /**< 8-bit signed integer */
 #include <stdbool.h>
 #else
 
-///* boolean support in C */
+/* boolean support in C */
 //#ifndef __cplusplus
 //#define true 1
 //#define TRUE 1
@@ -52,7 +52,7 @@ typedef int8_t   s8;  /**< 8-bit signed integer */
 //#define TRUE true
 //#define FALSE false
 //#endif /* __cplusplus */
-//
+
 #endif
 
 /**
