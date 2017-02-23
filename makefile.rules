@@ -72,7 +72,7 @@ LIB_ROOTS :=
 # This section contains the build rules for all binaries that have special build rules.
 # See makefile.default.rules for the default build rules.
 
-VIZFLAGS := -g
+VIZFLAGS := -I ./inc -g
 # Build the intermediate object file.
 $(OBJDIR)OCRViz$(OBJ_SUFFIX): OCRViz.cpp
 	$(CXX) $(TOOL_CXXFLAGS_NOOPT) $(VIZFLAGS) $(COMP_OBJ)$@ $<
