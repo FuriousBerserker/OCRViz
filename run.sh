@@ -14,5 +14,5 @@ echo $EXE_POS
 pin -t obj-intel64/OCRViz.so -- $EXE_POS
 #pin -pause_tool 20 -t obj-intel64/OCRViz.so -- $EXE_POS
 #/home/berserker/main/src/pin-3.2-81205-gcc-linux/pin -t obj-intel64/OCRViz.so -- $EXE_POS
-#dot -Teps -o cg.eps cg.dot
+dot -Teps -o cg.eps cg.dot
 #see cg.eps
