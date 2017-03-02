@@ -68,7 +68,7 @@ flags = [
 '-isystem',
 '/home/berserker/main/software/clang+llvm-3.7.1-x86_64-linux-gnu-ubuntu-14.04/bin/../include/c++/v1',
 '-isystem',
-'./ocr-types.h',
+'inc',
 '-c'
 ]
 
