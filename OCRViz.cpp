@@ -100,19 +100,19 @@ bool isOCRLibrary(IMG img) {
     }
 }
 
-void argsMainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
-#if DEBUG
-    cout << "argsMainEdt" << endl;
-#endif
-    ocrGuid_t* depIdv = new ocrGuid_t[depc];
-    for (uint32_t i = 0; i < depc; i++) {
-        depIdv[i] = depv[i].guid;
-    }
-    ocrGuid_t mainEdtGuid = {0};
-    Node* mainEdtNode = new Node(mainEdtGuid, depc, depIdv, Node::EDT);
-    computationGraph[mainEdtNode->id] = mainEdtNode;
-    delete[] depIdv;
-}
+//void argsMainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+//#if DEBUG
+//    cout << "argsMainEdt" << endl;
+//#endif
+//    ocrGuid_t* depIdv = new ocrGuid_t[depc];
+//    for (uint32_t i = 0; i < depc; i++) {
+//        depIdv[i] = depv[i].guid;
+//    }
+//    ocrGuid_t mainEdtGuid = {0};
+//    Node* mainEdtNode = new Node(mainEdtGuid, depc, depIdv, Node::EDT);
+//    computationGraph[mainEdtNode->id] = mainEdtNode;
+//    delete[] depIdv;
+//}
 
 void afterEdtCreate(ocrGuid_t guid, ocrGuid_t templateGuid, u32 paramc,
                     u64* paramv, u32 depc, ocrGuid_t* depv, u16 properties,
@@ -259,19 +259,19 @@ void img(IMG img, void* v) {
 
     if (isOCRLibrary(img)) {
         // monitor mainEdt
-        RTN mainEdtRTN = RTN_FindByName(img, "mainEdt");
-        if (RTN_Valid(mainEdtRTN)) {
-#if DEBUG
-            cout << "instrument mainEdt" << endl;
-#endif
-            RTN_Open(mainEdtRTN);
-            RTN_InsertCall(mainEdtRTN, IPOINT_BEFORE, (AFUNPTR)argsMainEdt,
-                           IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
-                           IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
-                           IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
-                           IARG_FUNCARG_ENTRYPOINT_VALUE, 3, IARG_END);
-            RTN_Close(mainEdtRTN);
-        }
+//        RTN mainEdtRTN = RTN_FindByName(img, "mainEdt");
+//        if (RTN_Valid(mainEdtRTN)) {
+//#if DEBUG
+//            cout << "instrument mainEdt" << endl;
+//#endif
+//            RTN_Open(mainEdtRTN);
+//            RTN_InsertCall(mainEdtRTN, IPOINT_BEFORE, (AFUNPTR)argsMainEdt,
+//                           IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+//                           IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+//                           IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
+//                           IARG_FUNCARG_ENTRYPOINT_VALUE, 3, IARG_END);
+//            RTN_Close(mainEdtRTN);
+//        }
 
         // replace notifyEdtCreate
         RTN rtn = RTN_FindByName(img, "notifyEdtCreate");
