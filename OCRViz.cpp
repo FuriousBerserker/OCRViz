@@ -40,6 +40,8 @@ map<intptr_t, Node*> computationGraph;
 
 map<Node::Type, ColorScheme> colorSchemes;
 
+vector<string> skippedLibraries;
+
 PIN_LOCK pinLock;
 
 ColorScheme::ColorScheme(string color, string style)
@@ -69,19 +71,33 @@ Node::Node(ocrGuid_t id, u32 depc, ocrGuid_t* depv, Node::Type type)
 
 Node::~Node() {}
 
-bool isSkip(IMG img) {
-    if (IMG_Name(img) == "/lib64/ld-linux-x86-64.so.2") {
-        return true;
-    } else {
-        return false;
-    }
-}
-
 int usage() {
     cout << "This tool visualizes the runtime dependency of OCR "
             "applications and outputs computation graph."
          << endl;
     return -1;
+}
+
+bool isSkippedLibrary(IMG img) {
+    string imageName = IMG_Name(img);
+    for (vector<string>::iterator li = skippedLibraries.begin(),
+                                  le = skippedLibraries.end();
+         li != le; li++) {
+        if (isEndWith(imageName, *li)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool isOCRLibrary(IMG img) {
+    string ocrLibraryName = "libocr_x86.so";
+    string imageName = IMG_Name(img);
+    if (isEndWith(imageName, ocrLibraryName)) {
+        return true;
+    } else {
+        return false;
+    }
 }
 
 void argsMainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
@@ -241,124 +257,129 @@ void img(IMG img, void* v) {
     cout << "img: " << IMG_Name(img) << endl;
 #endif
 
-    if (isSkip(img)) {
-        return;
-    }
-    // monitor mainEdt
-    RTN mainEdtRTN = RTN_FindByName(img, "mainEdt");
-    if (RTN_Valid(mainEdtRTN)) {
+    if (isOCRLibrary(img)) {
+        // monitor mainEdt
+        RTN mainEdtRTN = RTN_FindByName(img, "mainEdt");
+        if (RTN_Valid(mainEdtRTN)) {
 #if DEBUG
-        cout << "instrument mainEdt" << endl;
+            cout << "instrument mainEdt" << endl;
 #endif
-        RTN_Open(mainEdtRTN);
-        RTN_InsertCall(mainEdtRTN, IPOINT_BEFORE, (AFUNPTR)argsMainEdt,
-                       IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
-                       IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
-                       IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
-                       IARG_FUNCARG_ENTRYPOINT_VALUE, 3, IARG_END);
-        RTN_Close(mainEdtRTN);
-    }
+            RTN_Open(mainEdtRTN);
+            RTN_InsertCall(mainEdtRTN, IPOINT_BEFORE, (AFUNPTR)argsMainEdt,
+                           IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+                           IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+                           IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
+                           IARG_FUNCARG_ENTRYPOINT_VALUE, 3, IARG_END);
+            RTN_Close(mainEdtRTN);
+        }
 
-    // replace notifyEdtCreate
-    RTN rtn = RTN_FindByName(img, "notifyEdtCreate");
-    if (RTN_Valid(rtn)) {
+        // replace notifyEdtCreate
+        RTN rtn = RTN_FindByName(img, "notifyEdtCreate");
+        if (RTN_Valid(rtn)) {
 #if DEBUG
-        cout << "replace notifyEdtCreate" << endl;
+            cout << "replace notifyEdtCreate" << endl;
 #endif
-        PROTO proto_notifyEdtCreate = PROTO_Allocate(
-            PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyEdtCreate",
-            PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_AGGREGATE(ocrGuid_t),
-            PIN_PARG(u32), PIN_PARG(u64*), PIN_PARG(u32), PIN_PARG(ocrGuid_t*),
-            PIN_PARG(u16), PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_END());
-        RTN_ReplaceSignatureProbed(
-            rtn, AFUNPTR(afterEdtCreate), IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
-            IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
-            IARG_FUNCARG_ENTRYPOINT_VALUE, 3, IARG_FUNCARG_ENTRYPOINT_VALUE, 4,
-            IARG_FUNCARG_ENTRYPOINT_VALUE, 5, IARG_FUNCARG_ENTRYPOINT_VALUE, 6,
-            IARG_FUNCARG_ENTRYPOINT_VALUE, 7, IARG_END);
-        PROTO_Free(proto_notifyEdtCreate);
-    }
+            PROTO proto_notifyEdtCreate = PROTO_Allocate(
+                PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyEdtCreate",
+                PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_AGGREGATE(ocrGuid_t),
+                PIN_PARG(u32), PIN_PARG(u64*), PIN_PARG(u32),
+                PIN_PARG(ocrGuid_t*), PIN_PARG(u16),
+                PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_END());
+            RTN_ReplaceSignatureProbed(
+                rtn, AFUNPTR(afterEdtCreate), IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+                IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE,
+                2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3,
+                IARG_FUNCARG_ENTRYPOINT_VALUE, 4, IARG_FUNCARG_ENTRYPOINT_VALUE,
+                5, IARG_FUNCARG_ENTRYPOINT_VALUE, 6,
+                IARG_FUNCARG_ENTRYPOINT_VALUE, 7, IARG_END);
+            PROTO_Free(proto_notifyEdtCreate);
+        }
 
-    // replace notidyDbCreate
-    rtn = RTN_FindByName(img, "notifyDbCreate");
-    if (RTN_Valid(rtn)) {
+        // replace notidyDbCreate
+        rtn = RTN_FindByName(img, "notifyDbCreate");
+        if (RTN_Valid(rtn)) {
 #if DEBUG
-        cout << "replace notifyDbCreate" << endl;
+            cout << "replace notifyDbCreate" << endl;
 #endif
-        PROTO proto_notifyDbCreate = PROTO_Allocate(
-            PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyDbCreate",
-            PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG(void*), PIN_PARG(u64),
-            PIN_PARG(u16), PIN_PARG_ENUM(ocrInDbAllocator_t), PIN_PARG_END());
-        RTN_ReplaceSignatureProbed(
-            rtn, AFUNPTR(afterDbCreate), IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
-            IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
-            IARG_FUNCARG_ENTRYPOINT_VALUE, 3, IARG_FUNCARG_ENTRYPOINT_VALUE, 4,
-            IARG_END);
-        PROTO_Free(proto_notifyDbCreate);
-    }
+            PROTO proto_notifyDbCreate = PROTO_Allocate(
+                PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyDbCreate",
+                PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG(void*), PIN_PARG(u64),
+                PIN_PARG(u16), PIN_PARG_ENUM(ocrInDbAllocator_t),
+                PIN_PARG_END());
+            RTN_ReplaceSignatureProbed(
+                rtn, AFUNPTR(afterDbCreate), IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+                IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE,
+                2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3,
+                IARG_FUNCARG_ENTRYPOINT_VALUE, 4, IARG_END);
+            PROTO_Free(proto_notifyDbCreate);
+        }
 
-    // replace notifyEventCreate
-    rtn = RTN_FindByName(img, "notifyEventCreate");
-    if (RTN_Valid(rtn)) {
+        // replace notifyEventCreate
+        rtn = RTN_FindByName(img, "notifyEventCreate");
+        if (RTN_Valid(rtn)) {
 #if DEBUG
-        cout << "replace notifyEventCreate" << endl;
+            cout << "replace notifyEventCreate" << endl;
 #endif
-        PROTO proto_notifyEventCreate = PROTO_Allocate(
-            PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyEventCreate",
-            PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_ENUM(ocrEventTypes_t),
-            PIN_PARG(u16), PIN_PARG_END());
-        RTN_ReplaceSignatureProbed(rtn, AFUNPTR(afterEventCreate),
-                                   IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
-                                   IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
-                                   IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_END);
-        PROTO_Free(proto_notifyEventCreate);
-    }
+            PROTO proto_notifyEventCreate = PROTO_Allocate(
+                PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyEventCreate",
+                PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_ENUM(ocrEventTypes_t),
+                PIN_PARG(u16), PIN_PARG_END());
+            RTN_ReplaceSignatureProbed(
+                rtn, AFUNPTR(afterEventCreate), IARG_FUNCARG_ENTRYPOINT_VALUE,
+                0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+                IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_END);
+            PROTO_Free(proto_notifyEventCreate);
+        }
 
-    // replace notifyAddDependence
-    rtn = RTN_FindByName(img, "notifyAddDependence");
-    if (RTN_Valid(rtn)) {
+        // replace notifyAddDependence
+        rtn = RTN_FindByName(img, "notifyAddDependence");
+        if (RTN_Valid(rtn)) {
 #if DEBUG
-        cout << "replace notifyAddDependence" << endl;
+            cout << "replace notifyAddDependence" << endl;
 #endif
-        PROTO proto_notifyAddDependence = PROTO_Allocate(
-            PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyAddDependence",
-            PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_AGGREGATE(ocrGuid_t),
-            PIN_PARG(u32), PIN_PARG_ENUM(ocrDbAccessMode_t), PIN_PARG_END());
-        RTN_ReplaceSignatureProbed(
-            rtn, AFUNPTR(afterAddDependence), IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
-            IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
-            IARG_FUNCARG_ENTRYPOINT_VALUE, 3, IARG_END);
-        PROTO_Free(proto_notifyAddDependence);
-    }
+            PROTO proto_notifyAddDependence = PROTO_Allocate(
+                PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyAddDependence",
+                PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_AGGREGATE(ocrGuid_t),
+                PIN_PARG(u32), PIN_PARG_ENUM(ocrDbAccessMode_t),
+                PIN_PARG_END());
+            RTN_ReplaceSignatureProbed(
+                rtn, AFUNPTR(afterAddDependence), IARG_FUNCARG_ENTRYPOINT_VALUE,
+                0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+                IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_FUNCARG_ENTRYPOINT_VALUE,
+                3, IARG_END);
+            PROTO_Free(proto_notifyAddDependence);
+        }
 
-    // replace notifyEventSatisfy
-    rtn = RTN_FindByName(img, "notifyEventSatisfy");
-    if (RTN_Valid(rtn)) {
+        // replace notifyEventSatisfy
+        rtn = RTN_FindByName(img, "notifyEventSatisfy");
+        if (RTN_Valid(rtn)) {
 #if DEBUG
-        cout << "replace notifyEventSatisfy" << endl;
+            cout << "replace notifyEventSatisfy" << endl;
 #endif
-        PROTO proto_notifyEventSatisfy = PROTO_Allocate(
-            PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyEventSatisfy",
-            PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_AGGREGATE(ocrGuid_t),
-            PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG(u32), PIN_PARG_END());
-        RTN_ReplaceSignatureProbed(
-            rtn, AFUNPTR(afterEventSatisfy), IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
-            IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
-            IARG_FUNCARG_ENTRYPOINT_VALUE, 3, IARG_END);
-        PROTO_Free(proto_notifyEventSatisfy);
-    }
+            PROTO proto_notifyEventSatisfy = PROTO_Allocate(
+                PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyEventSatisfy",
+                PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_AGGREGATE(ocrGuid_t),
+                PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG(u32), PIN_PARG_END());
+            RTN_ReplaceSignatureProbed(
+                rtn, AFUNPTR(afterEventSatisfy), IARG_FUNCARG_ENTRYPOINT_VALUE,
+                0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+                IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_FUNCARG_ENTRYPOINT_VALUE,
+                3, IARG_END);
+            PROTO_Free(proto_notifyEventSatisfy);
+        }
 
-    // replace notifyShutdown
-    rtn = RTN_FindByName(img, "notifyShutdown");
-    if (RTN_Valid(rtn)) {
+        // replace notifyShutdown
+        rtn = RTN_FindByName(img, "notifyShutdown");
+        if (RTN_Valid(rtn)) {
 #if DEBUG
-        cout << "replace notifyShutdown" << endl;
+            cout << "replace notifyShutdown" << endl;
 #endif
-        PROTO proto_notifyShutdown =
-            PROTO_Allocate(PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyShutdown",
-                           PIN_PARG_END());
-        RTN_ReplaceSignatureProbed(rtn, AFUNPTR(fini), IARG_END);
-        PROTO_Free(proto_notifyShutdown);
+            PROTO proto_notifyShutdown =
+                PROTO_Allocate(PIN_PARG(void), CALLINGSTD_DEFAULT,
+                               "notifyShutdown", PIN_PARG_END());
+            RTN_ReplaceSignatureProbed(rtn, AFUNPTR(fini), IARG_END);
+            PROTO_Free(proto_notifyShutdown);
+        }
     }
 }
 
@@ -371,7 +392,17 @@ void initColorScheme() {
     colorSchemes[Node::INTERNAL] = d;
 }
 
-void init() { initColorScheme(); }
+void initSkippedLibrary() {
+    skippedLibraries.push_back("ld-linux-x86-64.so.2");
+    skippedLibraries.push_back("libpthread.so.0");
+    skippedLibraries.push_back("libc.so.6");
+    skippedLibraries.push_back("libocr_x86.so");
+}
+
+void init() {
+    initSkippedLibrary();
+    initColorScheme();
+}
 
 int main(int argc, char* argv[]) {
     PIN_InitLock(&pinLock);
