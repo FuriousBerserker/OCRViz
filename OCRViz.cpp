@@ -1,11 +1,13 @@
 #include <stdio.h>
 #include <cassert>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <list>
 #include <map>
 #include <string>
+#include <set>
 #include "ocr-types.h"
 #include "pin.H"
 #include "viz-util.hpp"
@@ -44,6 +46,8 @@ vector<string> skippedLibraries;
 
 PIN_LOCK pinLock;
 
+TLS_KEY tlsKey;
+
 ColorScheme::ColorScheme(string color, string style)
     : color(color), style(style) {}
 
@@ -78,6 +82,32 @@ int usage() {
     return -1;
 }
 
+bool isReachable(ocrGuid_t n1, ocrGuid_t n2) {
+    Node* node1 = computationGraph[n1.guid];
+    Node* node2 = computationGraph[n2.guid];
+    //TODO need to add assert
+    bool result = false;
+    set<Node*> accessedNodes;
+    list<Node*> queue;
+    queue.push_back(node1);
+    while (!queue.empty()) {
+        Node* current = queue.front();
+        queue.pop_front();
+        accessedNodes.insert(current);
+        if (current == node2) {
+            result = true;
+            break;
+        }
+        for (list<Node*>::iterator di = current->descent.begin(), de = current->descent.end(); di != de; di++) {
+            Node* node = *di;
+            if (accessedNodes.find(node) == accessedNodes.end()) {
+                queue.push_back(node);
+            }
+        }
+    }
+    return result;
+}
+
 bool isSkippedLibrary(IMG img) {
     string imageName = IMG_Name(img);
     for (vector<string>::iterator li = skippedLibraries.begin(),
@@ -99,6 +129,12 @@ bool isOCRLibrary(IMG img) {
         return false;
     }
 }
+
+inline ocrGuid_t* getEdtGuid(THREADID tid) {
+    ocrGuid_t* edtGuid = static_cast<ocrGuid_t*>(PIN_GetThreadData(tlsKey, tid));
+    return edtGuid;
+}
+
 
 //void argsMainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 //#if DEBUG
@@ -214,6 +250,18 @@ void afterEventSatisfy(ocrGuid_t edtGuid, ocrGuid_t eventGuid,
 #endif
 }
 
+void preEdt(THREADID tid, ocrGuid_t edtGuid) {
+
+#if DEBUG
+    cout << "preEdt" << endl;
+#endif
+    ocrGuid_t* currentEdtGuid = getEdtGuid(tid); 
+    memcpy(currentEdtGuid, &edtGuid, sizeof(ocrGuid_t));
+#if DEBUG
+    cout << "preEdt finish" << endl;
+#endif
+}
+
 void CG2Dot() {
 #if DEBUG
     cout << "CG2Dot" << endl;
@@ -285,8 +333,8 @@ void img(IMG img, void* v) {
                 PIN_PARG(u32), PIN_PARG(u64*), PIN_PARG(u32),
                 PIN_PARG(ocrGuid_t*), PIN_PARG(u16),
                 PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_END());
-            RTN_ReplaceSignatureProbed(
-                rtn, AFUNPTR(afterEdtCreate), IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+            RTN_ReplaceSignature(
+                rtn, AFUNPTR(afterEdtCreate), IARG_PROTOTYPE, proto_notifyEdtCreate, IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
                 IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE,
                 2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3,
                 IARG_FUNCARG_ENTRYPOINT_VALUE, 4, IARG_FUNCARG_ENTRYPOINT_VALUE,
@@ -306,8 +354,8 @@ void img(IMG img, void* v) {
                 PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG(void*), PIN_PARG(u64),
                 PIN_PARG(u16), PIN_PARG_ENUM(ocrInDbAllocator_t),
                 PIN_PARG_END());
-            RTN_ReplaceSignatureProbed(
-                rtn, AFUNPTR(afterDbCreate), IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+            RTN_ReplaceSignature(
+                rtn, AFUNPTR(afterDbCreate), IARG_PROTOTYPE, proto_notifyDbCreate, IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
                 IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE,
                 2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3,
                 IARG_FUNCARG_ENTRYPOINT_VALUE, 4, IARG_END);
@@ -324,8 +372,8 @@ void img(IMG img, void* v) {
                 PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyEventCreate",
                 PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_ENUM(ocrEventTypes_t),
                 PIN_PARG(u16), PIN_PARG_END());
-            RTN_ReplaceSignatureProbed(
-                rtn, AFUNPTR(afterEventCreate), IARG_FUNCARG_ENTRYPOINT_VALUE,
+            RTN_ReplaceSignature(
+                rtn, AFUNPTR(afterEventCreate), IARG_PROTOTYPE, proto_notifyEventCreate, IARG_FUNCARG_ENTRYPOINT_VALUE,
                 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
                 IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_END);
             PROTO_Free(proto_notifyEventCreate);
@@ -342,8 +390,8 @@ void img(IMG img, void* v) {
                 PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_AGGREGATE(ocrGuid_t),
                 PIN_PARG(u32), PIN_PARG_ENUM(ocrDbAccessMode_t),
                 PIN_PARG_END());
-            RTN_ReplaceSignatureProbed(
-                rtn, AFUNPTR(afterAddDependence), IARG_FUNCARG_ENTRYPOINT_VALUE,
+            RTN_ReplaceSignature(
+                rtn, AFUNPTR(afterAddDependence), IARG_PROTOTYPE, proto_notifyAddDependence, IARG_FUNCARG_ENTRYPOINT_VALUE,
                 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
                 IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_FUNCARG_ENTRYPOINT_VALUE,
                 3, IARG_END);
@@ -360,8 +408,8 @@ void img(IMG img, void* v) {
                 PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyEventSatisfy",
                 PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_AGGREGATE(ocrGuid_t),
                 PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG(u32), PIN_PARG_END());
-            RTN_ReplaceSignatureProbed(
-                rtn, AFUNPTR(afterEventSatisfy), IARG_FUNCARG_ENTRYPOINT_VALUE,
+            RTN_ReplaceSignature(
+                rtn, AFUNPTR(afterEventSatisfy), IARG_PROTOTYPE, proto_notifyEventSatisfy, IARG_FUNCARG_ENTRYPOINT_VALUE,
                 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
                 IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_FUNCARG_ENTRYPOINT_VALUE,
                 3, IARG_END);
@@ -377,10 +425,32 @@ void img(IMG img, void* v) {
             PROTO proto_notifyShutdown =
                 PROTO_Allocate(PIN_PARG(void), CALLINGSTD_DEFAULT,
                                "notifyShutdown", PIN_PARG_END());
-            RTN_ReplaceSignatureProbed(rtn, AFUNPTR(fini), IARG_END);
+            RTN_ReplaceSignature(rtn, AFUNPTR(fini), IARG_PROTOTYPE, proto_notifyShutdown, IARG_END);
             PROTO_Free(proto_notifyShutdown);
         }
+
+        // replace notifyEdtStart
+        rtn = RTN_FindByName(img, "notifyEdtStart");
+        if (RTN_Valid(rtn)) {
+#if DEBUG            
+            cout << "replace proto_notifyEdtStart" << endl;
+#endif
+            PROTO proto_notifyEdtStart = PROTO_Allocate(PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyEdtStart", PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_END());
+            RTN_ReplaceSignature(rtn, AFUNPTR(preEdt), IARG_PROTOTYPE, proto_notifyEdtStart, IARG_THREAD_ID, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_END);
+            PROTO_Free(proto_notifyEdtStart);
+        }
     }
+}
+
+void threadStart(THREADID tid, CONTEXT* ctxt, int32_t flags, void* v) {
+   ocrGuid_t* edtGuid = new ocrGuid_t;
+   PIN_SetThreadData(tlsKey, edtGuid, tid);
+}
+
+void threadFini(THREADID tid, const CONTEXT* ctxt, int32_t code, void* v) {
+    ocrGuid_t* edtGuid = getEdtGuid(tid);
+    delete edtGuid;
+    PIN_SetThreadData(tlsKey, NULL, tid);
 }
 
 void initColorScheme() {
@@ -406,13 +476,16 @@ void init() {
 
 int main(int argc, char* argv[]) {
     PIN_InitLock(&pinLock);
+    tlsKey = PIN_CreateThreadDataKey(0);
     PIN_InitSymbols();
     if (PIN_Init(argc, argv)) {
         return usage();
     }
     IMG_AddInstrumentFunction(img, 0);
+    PIN_AddThreadStartFunction(threadStart, 0);
+    PIN_AddThreadFiniFunction(threadFini, 0);
     // PIN_AddFiniFunction(fini, 0);
     init();
-    PIN_StartProgramProbed();
+    PIN_StartProgram();
     return 0;
 }
