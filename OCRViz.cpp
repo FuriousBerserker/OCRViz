@@ -130,6 +130,18 @@ bool isOCRLibrary(IMG img) {
     }
 }
 
+bool IsIgnorableIns(INS ins){
+    if (INS_IsStackRead(ins) || INS_IsStackWrite(ins) )
+        return true;
+    
+    // skip call, ret and JMP instructions
+    if(INS_IsBranchOrCall(ins) || INS_IsRet(ins)){
+        return true;
+    }
+
+    return false;
+}
+
 inline ocrGuid_t* getEdtGuid(THREADID tid) {
     ocrGuid_t* edtGuid = static_cast<ocrGuid_t*>(PIN_GetThreadData(tlsKey, tid));
     return edtGuid;
@@ -300,7 +312,7 @@ void fini() {
     CG2Dot();
 }
 
-void img(IMG img, void* v) {
+void overload(IMG img, void* v) {
 #if DEBUG
     cout << "img: " << IMG_Name(img) << endl;
 #endif
@@ -442,6 +454,71 @@ void img(IMG img, void* v) {
     }
 }
 
+void recordMemRead(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
+
+}
+
+void recordMemWrite(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
+
+}
+
+void instrumentInstruction(INS ins) {
+    if (IsIgnorableIns(ins))
+        return;
+
+    if (INS_IsAtomicUpdate(ins))
+        return;
+
+    uint32_t memOperands = INS_MemoryOperandCount(ins);
+
+    // Iterate over each memory operand of the instruction.
+    for (uint32_t memOp = 0; memOp < memOperands; memOp++)
+    {
+        if (INS_MemoryOperandIsRead(ins, memOp))
+        {
+            INS_InsertPredicatedCall(
+                ins, IPOINT_BEFORE, (AFUNPTR)recordMemRead,
+                IARG_MEMORYOP_EA, memOp,
+                IARG_MEMORYREAD_SIZE,
+                IARG_REG_VALUE, REG_STACK_PTR,
+                IARG_INST_PTR,
+                IARG_END);
+        }
+        // Note that in some architectures a single memory operand can be 
+        // both read and written (for instance incl (%eax) on IA-32)
+        // In that case we instrument it once for read and once for write.
+        if (INS_MemoryOperandIsWritten(ins, memOp))
+        {
+            INS_InsertPredicatedCall(
+                ins, IPOINT_BEFORE, (AFUNPTR)recordMemWrite,
+                IARG_MEMORYOP_EA, memOp,
+                IARG_MEMORYWRITE_SIZE,
+                IARG_REG_VALUE, REG_STACK_PTR,
+                IARG_INST_PTR,
+                IARG_END);
+        }
+    }
+
+}
+
+void instrumentRoutine(RTN rtn) {
+    RTN_Open(rtn);
+    for (INS ins = RTN_InsHead(rtn); INS_Valid(ins); ins = INS_Next(ins)) {
+        instrumentInstruction(ins);
+    }
+    RTN_Close(rtn);
+}
+
+void instrumentImage(IMG img, void* v) {
+    if (!isSkippedLibrary(img)) {
+        for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
+            for (RTN rtn = SEC_RtnHead(sec); RTN_Valid(rtn); rtn = RTN_Next(rtn)) {
+                instrumentRoutine(rtn);
+            }
+        }
+    }
+}
+
 void threadStart(THREADID tid, CONTEXT* ctxt, int32_t flags, void* v) {
    ocrGuid_t* edtGuid = new ocrGuid_t;
    PIN_SetThreadData(tlsKey, edtGuid, tid);
@@ -481,7 +558,8 @@ int main(int argc, char* argv[]) {
     if (PIN_Init(argc, argv)) {
         return usage();
     }
-    IMG_AddInstrumentFunction(img, 0);
+    IMG_AddInstrumentFunction(overload, 0);
+    IMG_AddInstrumentFunction(instrumentImage, 0);
     PIN_AddThreadStartFunction(threadStart, 0);
     PIN_AddThreadFiniFunction(threadFini, 0);
     // PIN_AddFiniFunction(fini, 0);
