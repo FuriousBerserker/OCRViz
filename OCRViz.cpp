@@ -61,16 +61,16 @@ string ColorScheme::toString() {
 
 Node::Node(ocrGuid_t id, u32 depc, ocrGuid_t* depv, Node::Type type)
     : id(id.guid), type(type) {
-    if (depv != NULL) {
-        for (u32 i = 0; i < depc; i++) {
-            ocrGuid_t dep = *(depv + i);
-            if (computationGraph.find(dep.guid) == computationGraph.end()) {
-                computationGraph[dep.guid] =
-                    new Node(dep, 0, NULL, Node::INTERNAL);
-            }
-            computationGraph[dep.guid]->descent.push_back(this);
-        }
-    }
+//    if (depv != NULL) {
+//        for (u32 i = 0; i < depc; i++) {
+//            ocrGuid_t dep = *(depv + i);
+//            if (computationGraph.find(dep.guid) == computationGraph.end()) {
+//                computationGraph[dep.guid] =
+//                    new Node(dep, 0, NULL, Node::INTERNAL);
+//            }
+//            computationGraph[dep.guid]->descent.push_back(this);
+//        }
+//    }
 }
 
 Node::~Node() {}
@@ -176,6 +176,11 @@ void afterEdtCreate(ocrGuid_t guid, ocrGuid_t templateGuid, u32 paramc,
     Node* newEdtNode = new Node(guid, depc, depv, Node::EDT);
     PIN_GetLock(&pinLock, threadid);
     computationGraph[guid.guid] = newEdtNode;
+    if (!isNullGuid(outputEvent)) {
+        Node* outputEventNode = new Node(outputEvent, 0, NULL, Node::EVENT); 
+        computationGraph[outputEvent.guid] = outputEventNode;
+        newEdtNode->descent.push_back(outputEventNode);
+    }
     PIN_ReleaseLock(&pinLock);
 #if DEBUG
     cout << "afterEdtCreate finish" << endl;
@@ -532,7 +537,7 @@ void threadFini(THREADID tid, const CONTEXT* ctxt, int32_t code, void* v) {
 
 void initColorScheme() {
     ColorScheme a("green", "filled"), b("yellow", "filled"),
-        c("blue", "filled"), d("black", "filled");
+        c("blue", "filled"), d("gray", "filled");
     colorSchemes[Node::EDT] = a;
     colorSchemes[Node::DB] = b;
     colorSchemes[Node::EVENT] = c;
