@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <algorithm>
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
@@ -6,8 +7,8 @@
 #include <iostream>
 #include <list>
 #include <map>
-#include <string>
 #include <set>
+#include <string>
 #include "ocr-types.h"
 #include "pin.H"
 #include "viz-util.hpp"
@@ -38,15 +39,59 @@ class Node {
     virtual ~Node();
 };
 
+class AccessRecord {
+   public:
+    ocrGuid_t edtGuid;
+    ADDRINT ip;
+    AccessRecord(ocrGuid_t& edtGuid, ADDRINT ip);
+};
+
+class BytePage {
+   public:
+    AccessRecord* write;
+    list<AccessRecord*> read;
+    bool hasWrite();
+    bool hasRead();
+    void update(AccessRecord* ar, bool isRead);
+};
+
+class DBPage {
+   public:
+    uintptr_t startAddress;
+    u64 len;
+    BytePage** bytePageArray;
+    DBPage(uintptr_t addr, u64 len);
+    void updateBytePages(AccessRecord* ar, uintptr_t addr, u64 len,
+                         bool isRead);
+    BytePage* getBytePage(uintptr_t addr);
+    int compareAddr(uintptr_t addr);
+};
+
+class ThreadLocalStore {
+   public:
+    ocrGuid_t edtGuid;
+    vector<DBPage*> acquiredDB;
+    void initializeAcquiredDB(u32 dpec, ocrEdtDep_t* depv);
+    void insertDB(ocrGuid_t& guid);
+    DBPage* getDB(uintptr_t addr);
+
+   private:
+    bool searchDB(uintptr_t addr, DBPage** ptr, u64* offset);
+};
+
 map<intptr_t, Node*> computationGraph;
 
 map<Node::Type, ColorScheme> colorSchemes;
+
+map<intptr_t, DBPage*> dbMap;
 
 vector<string> skippedLibraries;
 
 PIN_LOCK pinLock;
 
 TLS_KEY tlsKey;
+
+string userCodeImg;
 
 ColorScheme::ColorScheme(string color, string style)
     : color(color), style(style) {}
@@ -61,19 +106,133 @@ string ColorScheme::toString() {
 
 Node::Node(ocrGuid_t id, u32 depc, ocrGuid_t* depv, Node::Type type)
     : id(id.guid), type(type) {
-//    if (depv != NULL) {
-//        for (u32 i = 0; i < depc; i++) {
-//            ocrGuid_t dep = *(depv + i);
-//            if (computationGraph.find(dep.guid) == computationGraph.end()) {
-//                computationGraph[dep.guid] =
-//                    new Node(dep, 0, NULL, Node::INTERNAL);
-//            }
-//            computationGraph[dep.guid]->descent.push_back(this);
-//        }
-//    }
+    //    if (depv != NULL) {
+    //        for (u32 i = 0; i < depc; i++) {
+    //            ocrGuid_t dep = *(depv + i);
+    //            if (computationGraph.find(dep.guid) == computationGraph.end())
+    //            {
+    //                computationGraph[dep.guid] =
+    //                    new Node(dep, 0, NULL, Node::INTERNAL);
+    //            }
+    //            computationGraph[dep.guid]->descent.push_back(this);
+    //        }
+    //    }
 }
 
 Node::~Node() {}
+
+AccessRecord::AccessRecord(ocrGuid_t& edtGuid, ADDRINT ip) : ip(ip) {
+    this->edtGuid.guid = edtGuid.guid;
+}
+
+bool BytePage::hasWrite() {
+    if (write) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+bool BytePage::hasRead() {
+    if (!read.empty()) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+void BytePage::update(AccessRecord* ar, bool isRead) {
+    if (isRead) {
+        read.push_back(ar);
+    } else {
+        write = ar;
+    }
+}
+
+DBPage::DBPage(uintptr_t addr, u64 len) : startAddress(addr), len(len) {
+    bytePageArray = new BytePage*[len];
+    memset(bytePageArray, 0, sizeof(uintptr_t) * len);
+}
+
+void DBPage::updateBytePages(AccessRecord* ar, uintptr_t addr, u64 len,
+                             bool isRead) {
+    uintptr_t offset = addr - startAddress;
+    for (u64 i = 0; i < len; i++) {
+        if (!bytePageArray[offset + i]) {
+            bytePageArray[offset + i] = new BytePage();
+        }
+        bytePageArray[offset + i]->update(ar, isRead);
+    }
+}
+
+BytePage* DBPage::getBytePage(uintptr_t addr) {
+    return bytePageArray[addr - startAddress];
+}
+
+int DBPage::compareAddr(uintptr_t addr) {
+    if (addr < startAddress) {
+        return 1;
+    } else if (addr < startAddress + len) {
+        return 0;
+    } else {
+        return -1;
+    }
+}
+
+bool compareDB(DBPage* db1, DBPage* db2) {
+    return db1->startAddress < db2->startAddress;
+}
+
+bool ThreadLocalStore::searchDB(uintptr_t addr, DBPage** ptr, u64* offset) {
+    int start = 0;
+    int end = acquiredDB.size() - 1;
+    while (start <= end) {
+        int middle = (start + end) / 2;
+        DBPage* dbPage = acquiredDB[middle];
+        int res = dbPage->compareAddr(addr);
+        if (res == -1) {
+            start = middle + 1;
+        } else if (res == 1) {
+            end = middle - 1;
+        } else {
+            if (ptr) {
+                *ptr = acquiredDB[middle];
+            }
+            return true;
+        }
+    }
+    if (ptr) {
+        *ptr = NULL;
+    }
+    if (offset) {
+        *offset = start;
+    }
+    return false;
+}
+
+void ThreadLocalStore::initializeAcquiredDB(u32 depc, ocrEdtDep_t* depv) {
+    acquiredDB.clear();
+    acquiredDB.reserve(2 * depc);
+    for (u32 i = 0; i < depc; i++) {
+        if (depv[i].ptr) {
+            acquiredDB.push_back(dbMap[depv[i].guid.guid]);
+        }
+    }
+    sort(acquiredDB.begin(), acquiredDB.end(), compareDB);
+}
+
+void ThreadLocalStore::insertDB(ocrGuid_t& guid) {
+    DBPage* dbPage = dbMap[guid.guid];
+    u64 offset;
+    searchDB(dbPage->startAddress, NULL, &offset);
+    acquiredDB.insert(acquiredDB.begin() + offset, dbPage); 
+}
+
+DBPage* ThreadLocalStore::getDB(uintptr_t addr) {
+    DBPage* dbPage;
+    searchDB(addr, &dbPage, NULL);
+    return dbPage;
+}
 
 int usage() {
     cout << "This tool visualizes the runtime dependency of OCR "
@@ -82,10 +241,13 @@ int usage() {
     return -1;
 }
 
-bool isReachable(ocrGuid_t n1, ocrGuid_t n2) {
+/**
+ * Whether n2 is reachable from n1
+ */
+bool isReachable(ocrGuid_t& n1, ocrGuid_t& n2) {
     Node* node1 = computationGraph[n1.guid];
     Node* node2 = computationGraph[n2.guid];
-    //TODO need to add assert
+    // TODO need to add assert
     bool result = false;
     set<Node*> accessedNodes;
     list<Node*> queue;
@@ -98,7 +260,9 @@ bool isReachable(ocrGuid_t n1, ocrGuid_t n2) {
             result = true;
             break;
         }
-        for (list<Node*>::iterator di = current->descent.begin(), de = current->descent.end(); di != de; di++) {
+        for (list<Node *>::iterator di = current->descent.begin(),
+                                    de = current->descent.end();
+             di != de; di++) {
             Node* node = *di;
             if (accessedNodes.find(node) == accessedNodes.end()) {
                 queue.push_back(node);
@@ -130,25 +294,40 @@ bool isOCRLibrary(IMG img) {
     }
 }
 
-bool IsIgnorableIns(INS ins){
-    if (INS_IsStackRead(ins) || INS_IsStackWrite(ins) )
+bool isUserCodeImg(IMG img) {
+    string imageName = IMG_Name(img);
+    if (imageName == userCodeImg) {
         return true;
-    
+    } else {
+        return false;
+    }
+}
+
+bool isIgnorableIns(INS ins) {
+    if (INS_IsStackRead(ins) || INS_IsStackWrite(ins)) return true;
+
     // skip call, ret and JMP instructions
-    if(INS_IsBranchOrCall(ins) || INS_IsRet(ins)){
+    if (INS_IsBranchOrCall(ins) || INS_IsRet(ins)) {
         return true;
     }
 
     return false;
 }
 
-inline ocrGuid_t* getEdtGuid(THREADID tid) {
-    ocrGuid_t* edtGuid = static_cast<ocrGuid_t*>(PIN_GetThreadData(tlsKey, tid));
-    return edtGuid;
+// inline ocrGuid_t* getEdtGuid(THREADID tid) {
+//    ThreadLocalStore* data =
+//        static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, tid));
+//    return &data->edtGuid;
+//}
+
+inline void initializeTLS(ocrGuid_t& edtGuid, u32 depc, ocrEdtDep_t* depv,
+                          THREADID tid) {
+    ThreadLocalStore* data =
+        static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, tid));
+    data->edtGuid.guid = edtGuid.guid;
+    data->initializeAcquiredDB(depc, depv);
 }
-
-
-//void argsMainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
+// void argsMainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 //#if DEBUG
 //    cout << "argsMainEdt" << endl;
 //#endif
@@ -177,7 +356,7 @@ void afterEdtCreate(ocrGuid_t guid, ocrGuid_t templateGuid, u32 paramc,
     PIN_GetLock(&pinLock, threadid);
     computationGraph[guid.guid] = newEdtNode;
     if (!isNullGuid(outputEvent)) {
-        Node* outputEventNode = new Node(outputEvent, 0, NULL, Node::EVENT); 
+        Node* outputEventNode = new Node(outputEvent, 0, NULL, Node::EVENT);
         computationGraph[outputEvent.guid] = outputEventNode;
         newEdtNode->descent.push_back(outputEventNode);
     }
@@ -194,9 +373,14 @@ void afterDbCreate(ocrGuid_t guid, void* addr, u64 len, u16 flags,
 #endif
     THREADID threadid = PIN_ThreadId();
     Node* newDbNode = new Node(guid, 0, NULL, Node::DB);
+    DBPage* dbPage = new DBPage((uintptr_t)addr, len);
     PIN_GetLock(&pinLock, threadid);
     computationGraph[guid.guid] = newDbNode;
+    dbMap[guid.guid] = dbPage;
     PIN_ReleaseLock(&pinLock);
+    ThreadLocalStore* data =
+        static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, threadid));
+    data->insertDB(guid);
 #if DEBUG
     cout << "afterDbCreate finish" << endl;
 #endif
@@ -267,13 +451,18 @@ void afterEventSatisfy(ocrGuid_t edtGuid, ocrGuid_t eventGuid,
 #endif
 }
 
-void preEdt(THREADID tid, ocrGuid_t edtGuid) {
-
+void preEdt(THREADID tid, ocrGuid_t edtGuid, u32 paramc, u64* paramv, u32 depc,
+            ocrEdtDep_t* depv, u64* dbSizev) {
 #if DEBUG
     cout << "preEdt" << endl;
 #endif
-    ocrGuid_t* currentEdtGuid = getEdtGuid(tid); 
-    memcpy(currentEdtGuid, &edtGuid, sizeof(ocrGuid_t));
+    initializeTLS(edtGuid, depc, depv, tid);
+//    for (u64 i = 0; i < depc; i++) {
+//        if (depv[i].ptr) {
+//            cout << "db: " << std::hex << depv[i].ptr << " " << std::dec <<
+//            dbSizev[i] << endl;
+//        }
+//    }
 #if DEBUG
     cout << "preEdt finish" << endl;
 #endif
@@ -324,19 +513,21 @@ void overload(IMG img, void* v) {
 
     if (isOCRLibrary(img)) {
         // monitor mainEdt
-//        RTN mainEdtRTN = RTN_FindByName(img, "mainEdt");
-//        if (RTN_Valid(mainEdtRTN)) {
-//#if DEBUG
-//            cout << "instrument mainEdt" << endl;
-//#endif
-//            RTN_Open(mainEdtRTN);
-//            RTN_InsertCall(mainEdtRTN, IPOINT_BEFORE, (AFUNPTR)argsMainEdt,
-//                           IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
-//                           IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
-//                           IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
-//                           IARG_FUNCARG_ENTRYPOINT_VALUE, 3, IARG_END);
-//            RTN_Close(mainEdtRTN);
-//        }
+        //        RTN mainEdtRTN = RTN_FindByName(img, "mainEdt");
+        //        if (RTN_Valid(mainEdtRTN)) {
+        //#if DEBUG
+        //            cout << "instrument mainEdt" << endl;
+        //#endif
+        //            RTN_Open(mainEdtRTN);
+        //            RTN_InsertCall(mainEdtRTN, IPOINT_BEFORE,
+        //            (AFUNPTR)argsMainEdt,
+        //                           IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+        //                           IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+        //                           IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
+        //                           IARG_FUNCARG_ENTRYPOINT_VALUE, 3,
+        //                           IARG_END);
+        //            RTN_Close(mainEdtRTN);
+        //        }
 
         // replace notifyEdtCreate
         RTN rtn = RTN_FindByName(img, "notifyEdtCreate");
@@ -351,7 +542,8 @@ void overload(IMG img, void* v) {
                 PIN_PARG(ocrGuid_t*), PIN_PARG(u16),
                 PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_END());
             RTN_ReplaceSignature(
-                rtn, AFUNPTR(afterEdtCreate), IARG_PROTOTYPE, proto_notifyEdtCreate, IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+                rtn, AFUNPTR(afterEdtCreate), IARG_PROTOTYPE,
+                proto_notifyEdtCreate, IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
                 IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE,
                 2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3,
                 IARG_FUNCARG_ENTRYPOINT_VALUE, 4, IARG_FUNCARG_ENTRYPOINT_VALUE,
@@ -372,7 +564,8 @@ void overload(IMG img, void* v) {
                 PIN_PARG(u16), PIN_PARG_ENUM(ocrInDbAllocator_t),
                 PIN_PARG_END());
             RTN_ReplaceSignature(
-                rtn, AFUNPTR(afterDbCreate), IARG_PROTOTYPE, proto_notifyDbCreate, IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+                rtn, AFUNPTR(afterDbCreate), IARG_PROTOTYPE,
+                proto_notifyDbCreate, IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
                 IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE,
                 2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3,
                 IARG_FUNCARG_ENTRYPOINT_VALUE, 4, IARG_END);
@@ -389,10 +582,11 @@ void overload(IMG img, void* v) {
                 PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyEventCreate",
                 PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_ENUM(ocrEventTypes_t),
                 PIN_PARG(u16), PIN_PARG_END());
-            RTN_ReplaceSignature(
-                rtn, AFUNPTR(afterEventCreate), IARG_PROTOTYPE, proto_notifyEventCreate, IARG_FUNCARG_ENTRYPOINT_VALUE,
-                0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
-                IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_END);
+            RTN_ReplaceSignature(rtn, AFUNPTR(afterEventCreate), IARG_PROTOTYPE,
+                                 proto_notifyEventCreate,
+                                 IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+                                 IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+                                 IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_END);
             PROTO_Free(proto_notifyEventCreate);
         }
 
@@ -408,10 +602,10 @@ void overload(IMG img, void* v) {
                 PIN_PARG(u32), PIN_PARG_ENUM(ocrDbAccessMode_t),
                 PIN_PARG_END());
             RTN_ReplaceSignature(
-                rtn, AFUNPTR(afterAddDependence), IARG_PROTOTYPE, proto_notifyAddDependence, IARG_FUNCARG_ENTRYPOINT_VALUE,
-                0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
-                IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_FUNCARG_ENTRYPOINT_VALUE,
-                3, IARG_END);
+                rtn, AFUNPTR(afterAddDependence), IARG_PROTOTYPE,
+                proto_notifyAddDependence, IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+                IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE,
+                2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3, IARG_END);
             PROTO_Free(proto_notifyAddDependence);
         }
 
@@ -426,10 +620,10 @@ void overload(IMG img, void* v) {
                 PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_AGGREGATE(ocrGuid_t),
                 PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG(u32), PIN_PARG_END());
             RTN_ReplaceSignature(
-                rtn, AFUNPTR(afterEventSatisfy), IARG_PROTOTYPE, proto_notifyEventSatisfy, IARG_FUNCARG_ENTRYPOINT_VALUE,
-                0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
-                IARG_FUNCARG_ENTRYPOINT_VALUE, 2, IARG_FUNCARG_ENTRYPOINT_VALUE,
-                3, IARG_END);
+                rtn, AFUNPTR(afterEventSatisfy), IARG_PROTOTYPE,
+                proto_notifyEventSatisfy, IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+                IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE,
+                2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3, IARG_END);
             PROTO_Free(proto_notifyEventSatisfy);
         }
 
@@ -442,68 +636,112 @@ void overload(IMG img, void* v) {
             PROTO proto_notifyShutdown =
                 PROTO_Allocate(PIN_PARG(void), CALLINGSTD_DEFAULT,
                                "notifyShutdown", PIN_PARG_END());
-            RTN_ReplaceSignature(rtn, AFUNPTR(fini), IARG_PROTOTYPE, proto_notifyShutdown, IARG_END);
+            RTN_ReplaceSignature(rtn, AFUNPTR(fini), IARG_PROTOTYPE,
+                                 proto_notifyShutdown, IARG_END);
             PROTO_Free(proto_notifyShutdown);
         }
 
         // replace notifyEdtStart
         rtn = RTN_FindByName(img, "notifyEdtStart");
         if (RTN_Valid(rtn)) {
-#if DEBUG            
+#if DEBUG
             cout << "replace proto_notifyEdtStart" << endl;
 #endif
-            PROTO proto_notifyEdtStart = PROTO_Allocate(PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyEdtStart", PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_END());
-            RTN_ReplaceSignature(rtn, AFUNPTR(preEdt), IARG_PROTOTYPE, proto_notifyEdtStart, IARG_THREAD_ID, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_END);
+            PROTO proto_notifyEdtStart = PROTO_Allocate(
+                PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyEdtStart",
+                PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG(u32), PIN_PARG(u64*),
+                PIN_PARG(u32), PIN_PARG(ocrEdtDep_t*), PIN_PARG(u64*),
+                PIN_PARG_END());
+            RTN_ReplaceSignature(
+                rtn, AFUNPTR(preEdt), IARG_PROTOTYPE, proto_notifyEdtStart,
+                IARG_THREAD_ID, IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+                IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_FUNCARG_ENTRYPOINT_VALUE,
+                2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3,
+                IARG_FUNCARG_ENTRYPOINT_VALUE, 4, IARG_FUNCARG_ENTRYPOINT_VALUE,
+                5, IARG_END);
             PROTO_Free(proto_notifyEdtStart);
         }
     }
 }
 
-void recordMemRead(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
+void checkDataRace(ocrGuid_t& guid, bool isRead, BytePage* bytePage) {
+    if (isRead) {
+        if (bytePage->hasWrite()) {
+            isReachable(bytePage->write->edtGuid, guid);
+        }
+    } else {
+        if (bytePage->hasWrite()) {
+            isReachable(bytePage->write->edtGuid, guid);
+        }
+        if (bytePage->hasWrite()) {
+            for (list<AccessRecord *>::iterator ai = bytePage->read.begin(),
+                                                ae = bytePage->read.end();
+                 ai != ae; ai++) {
+                isReachable((*ai)->edtGuid, guid);
+            }
+        }
+    }
+}
 
+void recordMemRead(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
+    THREADID tid = PIN_ThreadId();
+    ThreadLocalStore* data =
+        static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, tid));
+    DBPage* dbPage = data->getDB((uintptr_t)addr);
+    if (dbPage) {
+        for (uint32_t i = 0; i < size; i++) {
+            BytePage* current = dbPage->getBytePage((uintptr_t)addr + i);
+            if (current) {
+                checkDataRace(data->edtGuid, true, current);
+            }
+        }
+        AccessRecord* ar = new AccessRecord(data->edtGuid, ip);
+        dbPage->updateBytePages(ar, (uintptr_t)addr, size, true);
+    }
 }
 
 void recordMemWrite(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
-
+    THREADID tid = PIN_ThreadId();
+    ThreadLocalStore* data =
+        static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, tid));
+    DBPage* dbPage = data->getDB((uintptr_t)addr);
+    if (dbPage) {
+        for (uint32_t i = 0; i < size; i++) {
+            BytePage* current = dbPage->getBytePage((uintptr_t)addr + i);
+            if (current) {
+                checkDataRace(data->edtGuid, false, current);
+            }
+        }
+        AccessRecord* ar = new AccessRecord(data->edtGuid, ip);
+        dbPage->updateBytePages(ar, (uintptr_t)addr, size, false);
+    }
 }
 
 void instrumentInstruction(INS ins) {
-    if (IsIgnorableIns(ins))
-        return;
+    if (isIgnorableIns(ins)) return;
 
-    if (INS_IsAtomicUpdate(ins))
-        return;
+    if (INS_IsAtomicUpdate(ins)) return;
 
     uint32_t memOperands = INS_MemoryOperandCount(ins);
 
     // Iterate over each memory operand of the instruction.
-    for (uint32_t memOp = 0; memOp < memOperands; memOp++)
-    {
-        if (INS_MemoryOperandIsRead(ins, memOp))
-        {
-            INS_InsertPredicatedCall(
-                ins, IPOINT_BEFORE, (AFUNPTR)recordMemRead,
-                IARG_MEMORYOP_EA, memOp,
-                IARG_MEMORYREAD_SIZE,
-                IARG_REG_VALUE, REG_STACK_PTR,
-                IARG_INST_PTR,
-                IARG_END);
+    for (uint32_t memOp = 0; memOp < memOperands; memOp++) {
+        if (INS_MemoryOperandIsRead(ins, memOp)) {
+            INS_InsertPredicatedCall(ins, IPOINT_BEFORE, (AFUNPTR)recordMemRead,
+                                     IARG_MEMORYOP_EA, memOp,
+                                     IARG_MEMORYREAD_SIZE, IARG_REG_VALUE,
+                                     REG_STACK_PTR, IARG_INST_PTR, IARG_END);
         }
-        // Note that in some architectures a single memory operand can be 
+        // Note that in some architectures a single memory operand can be
         // both read and written (for instance incl (%eax) on IA-32)
         // In that case we instrument it once for read and once for write.
-        if (INS_MemoryOperandIsWritten(ins, memOp))
-        {
+        if (INS_MemoryOperandIsWritten(ins, memOp)) {
             INS_InsertPredicatedCall(
-                ins, IPOINT_BEFORE, (AFUNPTR)recordMemWrite,
-                IARG_MEMORYOP_EA, memOp,
-                IARG_MEMORYWRITE_SIZE,
-                IARG_REG_VALUE, REG_STACK_PTR,
-                IARG_INST_PTR,
-                IARG_END);
+                ins, IPOINT_BEFORE, (AFUNPTR)recordMemWrite, IARG_MEMORYOP_EA,
+                memOp, IARG_MEMORYWRITE_SIZE, IARG_REG_VALUE, REG_STACK_PTR,
+                IARG_INST_PTR, IARG_END);
         }
     }
-
 }
 
 void instrumentRoutine(RTN rtn) {
@@ -515,9 +753,10 @@ void instrumentRoutine(RTN rtn) {
 }
 
 void instrumentImage(IMG img, void* v) {
-    if (!isSkippedLibrary(img)) {
+    if (isUserCodeImg(img)) {
         for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
-            for (RTN rtn = SEC_RtnHead(sec); RTN_Valid(rtn); rtn = RTN_Next(rtn)) {
+            for (RTN rtn = SEC_RtnHead(sec); RTN_Valid(rtn);
+                 rtn = RTN_Next(rtn)) {
                 instrumentRoutine(rtn);
             }
         }
@@ -525,13 +764,14 @@ void instrumentImage(IMG img, void* v) {
 }
 
 void threadStart(THREADID tid, CONTEXT* ctxt, int32_t flags, void* v) {
-   ocrGuid_t* edtGuid = new ocrGuid_t;
-   PIN_SetThreadData(tlsKey, edtGuid, tid);
+    ThreadLocalStore* store = new ThreadLocalStore();
+    PIN_SetThreadData(tlsKey, store, tid);
 }
 
 void threadFini(THREADID tid, const CONTEXT* ctxt, int32_t code, void* v) {
-    ocrGuid_t* edtGuid = getEdtGuid(tid);
-    delete edtGuid;
+    ThreadLocalStore* data =
+        static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, tid));
+    delete data;
     PIN_SetThreadData(tlsKey, NULL, tid);
 }
 
@@ -563,6 +803,8 @@ int main(int argc, char* argv[]) {
     if (PIN_Init(argc, argv)) {
         return usage();
     }
+    userCodeImg = argv[argc - 1];
+
     IMG_AddInstrumentFunction(overload, 0);
     IMG_AddInstrumentFunction(instrumentImage, 0);
     PIN_AddThreadStartFunction(threadStart, 0);
