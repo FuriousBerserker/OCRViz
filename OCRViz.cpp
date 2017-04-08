@@ -83,6 +83,7 @@ map<intptr_t, Node*> computationGraph;
 
 map<Node::Type, ColorScheme> colorSchemes;
 
+//EDT acquired DB
 map<intptr_t, DBPage*> dbMap;
 
 vector<string> skippedLibraries;
@@ -664,27 +665,64 @@ void overload(IMG img, void* v) {
     }
 }
 
-void checkDataRace(ocrGuid_t& guid, bool isRead, BytePage* bytePage) {
+void outputRaceInfo(ADDRINT ip1, bool ip1IsRead, ADDRINT ip2, bool ip2IsRead) {
+    int32_t ip1Line, ip1Column, ip2Line, ip2Column;
+    string ip1File, ip2File;
+    string ip1Type, ip2Type;
+    if (ip1IsRead) {
+        ip1Type = "Read";
+    } else {
+        ip1Type = "Write";
+    }
+    if (ip2IsRead) {
+        ip2Type = "Read";
+    } else {
+        ip2Type = "Write";
+    }
+    
+    PIN_LockClient();
+    PIN_GetSourceLocation(ip1, &ip1Column, &ip1Line, &ip1File);
+    PIN_GetSourceLocation(ip2, &ip2Column, &ip2Line, &ip2File);
+    PIN_UnlockClient();
+    cout << ip1Type << "-" << ip2Type << " race detect!" << endl;
+    cout << "first op is " << ip1 << " in " << ip1File << ": " << ip1Line << ": " << ip1Column << endl;
+    cout << "second op is " << ip2 << " in " << ip2File << ": " << ip2Line << ": " << ip2Column << endl;
+    abort();
+
+}
+
+void checkDataRace(ADDRINT ip, ocrGuid_t& guid, bool isRead, BytePage* bytePage) {
     if (isRead) {
         if (bytePage->hasWrite()) {
-            isReachable(bytePage->write->edtGuid, guid);
+            bool mhp = !isReachable(bytePage->write->edtGuid, guid);
+            if (mhp) {
+                outputRaceInfo(bytePage->write->ip, false, ip, true);
+            }
         }
     } else {
         if (bytePage->hasWrite()) {
-            isReachable(bytePage->write->edtGuid, guid);
+            bool mhp = !isReachable(bytePage->write->edtGuid, guid);
+            if (mhp) {
+                outputRaceInfo(bytePage->write->ip, false, ip, false);
+            }
+
         }
         if (bytePage->hasWrite()) {
             for (list<AccessRecord *>::iterator ai = bytePage->read.begin(),
                                                 ae = bytePage->read.end();
                  ai != ae; ai++) {
-                isReachable((*ai)->edtGuid, guid);
+                bool mhp = !isReachable((*ai)->edtGuid, guid);
+                if (mhp) {
+                    outputRaceInfo((*ai)->ip, true, ip, false);
+                }
+
             }
         }
     }
 }
 
 void recordMemRead(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
-    THREADID tid = PIN_ThreadId();
+    THREADID tid = PIN_ThreadId();    
     ThreadLocalStore* data =
         static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, tid));
     DBPage* dbPage = data->getDB((uintptr_t)addr);
@@ -692,7 +730,7 @@ void recordMemRead(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
         for (uint32_t i = 0; i < size; i++) {
             BytePage* current = dbPage->getBytePage((uintptr_t)addr + i);
             if (current) {
-                checkDataRace(data->edtGuid, true, current);
+                checkDataRace(ip, data->edtGuid, true, current);
             }
         }
         AccessRecord* ar = new AccessRecord(data->edtGuid, ip);
@@ -709,7 +747,7 @@ void recordMemWrite(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
         for (uint32_t i = 0; i < size; i++) {
             BytePage* current = dbPage->getBytePage((uintptr_t)addr + i);
             if (current) {
-                checkDataRace(data->edtGuid, false, current);
+                checkDataRace(ip, data->edtGuid, false, current);
             }
         }
         AccessRecord* ar = new AccessRecord(data->edtGuid, ip);
