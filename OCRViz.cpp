@@ -39,6 +39,26 @@ class Node {
     virtual ~Node();
 };
 
+class EDTNode : public Node {
+    public:
+        u16 epoch;
+        EDTNode(ocrGuid_t id, u32 depc, ocrGuid_t* depv, u16 epoch);
+        virtual ~EDTNode();
+};
+
+class DBNode : public Node {
+    public:
+       u16 accessMode;
+       DBNode(ocrGuid_t id, u32 depc, ocrGuid_t* depv, u16 accessMode);
+       virtual ~DBNode();
+};
+
+class EventNode : public Node {
+    public:
+        EventNode(ocrGuid_t id, u32 depc, ocrGuid_t* depv);
+        virtual ~EventNode();
+};
+
 class AccessRecord {
    public:
     ocrGuid_t edtGuid;
@@ -121,6 +141,30 @@ Node::Node(ocrGuid_t id, u32 depc, ocrGuid_t* depv, Node::Type type)
 }
 
 Node::~Node() {}
+
+EDTNode::EDTNode(ocrGuid_t id, u32 depc, ocrGuid_t* depv, u16 epoch) : Node(id, depc, depv, Node::EDT), epoch(epoch) {
+    
+}
+
+EDTNode::~EDTNode() {
+
+}
+
+DBNode::DBNode(ocrGuid_t id, u32 depc, ocrGuid_t* depv, u16 accessMode) : Node(id, depc, depv, Node::DB), accessMode(accessMode) {
+
+}
+
+DBNode::~DBNode() {
+
+}
+
+EventNode::EventNode(ocrGuid_t id, u32 depc, ocrGuid_t* depv) : Node(id, depc, depv, Node::EVENT) {
+
+}
+
+EventNode::~EventNode() {
+
+}
 
 AccessRecord::AccessRecord(ocrGuid_t& edtGuid, ADDRINT ip) : ip(ip) {
     this->edtGuid.guid = edtGuid.guid;
@@ -353,7 +397,7 @@ void afterEdtCreate(ocrGuid_t guid, ocrGuid_t templateGuid, u32 paramc,
         exit(0);
     }
     THREADID threadid = PIN_ThreadId();
-    Node* newEdtNode = new Node(guid, depc, depv, Node::EDT);
+    EDTNode* newEdtNode = new EDTNode(guid, depc, depv, properties);
     PIN_GetLock(&pinLock, threadid);
     computationGraph[guid.guid] = newEdtNode;
     if (!isNullGuid(outputEvent)) {
@@ -373,7 +417,7 @@ void afterDbCreate(ocrGuid_t guid, void* addr, u64 len, u16 flags,
     cout << "afterDbCreate" << endl;
 #endif
     THREADID threadid = PIN_ThreadId();
-    Node* newDbNode = new Node(guid, 0, NULL, Node::DB);
+    DBNode* newDbNode = new DBNode(guid, 0, NULL, flags);
     DBPage* dbPage = new DBPage((uintptr_t)addr, len);
     PIN_GetLock(&pinLock, threadid);
     computationGraph[guid.guid] = newDbNode;
@@ -393,7 +437,7 @@ void afterEventCreate(ocrGuid_t guid, ocrEventTypes_t eventType,
     cout << "afterEventCreate" << endl;
 #endif
     THREADID threadid = PIN_ThreadId();
-    Node* newEventNode = new Node(guid, 0, NULL, Node::EVENT);
+    EventNode* newEventNode = new EventNode(guid, 0, NULL);
     PIN_GetLock(&pinLock, threadid);
     computationGraph[guid.guid] = newEventNode;
     PIN_ReleaseLock(&pinLock);
@@ -541,7 +585,7 @@ void overload(IMG img, void* v) {
                 PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_AGGREGATE(ocrGuid_t),
                 PIN_PARG(u32), PIN_PARG(u64*), PIN_PARG(u32),
                 PIN_PARG(ocrGuid_t*), PIN_PARG(u16),
-                PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_END());
+                PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_END());
             RTN_ReplaceSignature(
                 rtn, AFUNPTR(afterEdtCreate), IARG_PROTOTYPE,
                 proto_notifyEdtCreate, IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
@@ -549,7 +593,7 @@ void overload(IMG img, void* v) {
                 2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3,
                 IARG_FUNCARG_ENTRYPOINT_VALUE, 4, IARG_FUNCARG_ENTRYPOINT_VALUE,
                 5, IARG_FUNCARG_ENTRYPOINT_VALUE, 6,
-                IARG_FUNCARG_ENTRYPOINT_VALUE, 7, IARG_END);
+                IARG_FUNCARG_ENTRYPOINT_VALUE, 7, IARG_FUNCARG_ENTRYPOINT_VALUE, 8, IARG_END);
             PROTO_Free(proto_notifyEdtCreate);
         }
 
