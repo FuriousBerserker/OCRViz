@@ -14,6 +14,7 @@
 #include "viz-util.hpp"
 #define DEBUG 1
 
+#define START_EPOCH 0
 using namespace ::std;
 
 class ColorScheme {
@@ -29,41 +30,55 @@ class ColorScheme {
 class Node {
    public:
     enum Type { EDT, DB, EVENT, INTERNAL };
+    enum EdgeType { SPAWN, CONTINUE, JOIN };
 
    public:
     intptr_t id;
-    list<Node*> descent;
+    list<Node*> children;
     Type type;
 
-    Node(ocrGuid_t id, u32 depc, ocrGuid_t* depv, Type type);
+    Node(intptr_t id, Type type);
     virtual ~Node();
+    void addChild(Node* node);
 };
 
 class EDTNode : public Node {
-    public:
-        u16 epoch;
-        EDTNode(ocrGuid_t id, u32 depc, ocrGuid_t* depv, u16 epoch);
-        virtual ~EDTNode();
+   public:
+    vector<Node*> spawnEdges;
+    EDTNode(intptr_t id);
+    virtual ~EDTNode();
+    void addSpawnEdges(Node* node);
+    Node* getSpawnEdge(u16 epoch);
 };
 
 class DBNode : public Node {
-    public:
-       u16 accessMode;
-       DBNode(ocrGuid_t id, u32 depc, ocrGuid_t* depv, u16 accessMode);
-       virtual ~DBNode();
+   public:
+    u16 accessMode;
+    DBNode(intptr_t id, u16 accessMode);
+    virtual ~DBNode();
 };
 
 class EventNode : public Node {
-    public:
-        EventNode(ocrGuid_t id, u32 depc, ocrGuid_t* depv);
-        virtual ~EventNode();
+   public:
+    EventNode(intptr_t id);
+    virtual ~EventNode();
+};
+
+struct NodeKey {
+    intptr_t guid;
+};
+
+class KeyComparator {
+   public:
+    bool operator()(const NodeKey& key1, const NodeKey& key2) const;
 };
 
 class AccessRecord {
    public:
-    ocrGuid_t edtGuid;
+    NodeKey edtKey;
+    u16 epoch;
     ADDRINT ip;
-    AccessRecord(ocrGuid_t& edtGuid, ADDRINT ip);
+    AccessRecord(NodeKey& nodeKey, u16 epoch, ADDRINT ip);
 };
 
 class BytePage {
@@ -78,7 +93,7 @@ class BytePage {
 class DBPage {
    public:
     uintptr_t startAddress;
-    u64 len;
+    u64 length;
     BytePage** bytePageArray;
     DBPage(uintptr_t addr, u64 len);
     void updateBytePages(AccessRecord* ar, uintptr_t addr, u64 len,
@@ -89,7 +104,8 @@ class DBPage {
 
 class ThreadLocalStore {
    public:
-    ocrGuid_t edtGuid;
+    EDTNode* currentEdt;
+    u16 epoch;
     vector<DBPage*> acquiredDB;
     void initializeAcquiredDB(u32 dpec, ocrEdtDep_t* depv);
     void insertDB(ocrGuid_t& guid);
@@ -99,20 +115,28 @@ class ThreadLocalStore {
     bool searchDB(uintptr_t addr, DBPage** ptr, u64* offset);
 };
 
-map<intptr_t, Node*> computationGraph;
+// CG
+map<NodeKey, Node*, KeyComparator> computationGraph;
 
-map<Node::Type, ColorScheme> colorSchemes;
+// node color scheme binding
+map<Node::Type, ColorScheme> nodeColorSchemes;
 
-//EDT acquired DB
+// edge color scheme binding
+map<Node::EdgeType, ColorScheme> edgeColorSchemes;
+
+// EDT acquired DB
 map<intptr_t, DBPage*> dbMap;
 
+// library list
 vector<string> skippedLibraries;
 
+// user code image name
+string userCodeImg;
+
+// pin obj
 PIN_LOCK pinLock;
 
 TLS_KEY tlsKey;
-
-string userCodeImg;
 
 ColorScheme::ColorScheme(string color, string style)
     : color(color), style(style) {}
@@ -125,49 +149,39 @@ string ColorScheme::toString() {
     return "[color=" + color + ", style=" + style + "]";
 }
 
-Node::Node(ocrGuid_t id, u32 depc, ocrGuid_t* depv, Node::Type type)
-    : id(id.guid), type(type) {
-    //    if (depv != NULL) {
-    //        for (u32 i = 0; i < depc; i++) {
-    //            ocrGuid_t dep = *(depv + i);
-    //            if (computationGraph.find(dep.guid) == computationGraph.end())
-    //            {
-    //                computationGraph[dep.guid] =
-    //                    new Node(dep, 0, NULL, Node::INTERNAL);
-    //            }
-    //            computationGraph[dep.guid]->descent.push_back(this);
-    //        }
-    //    }
-}
+Node::Node(intptr_t id, Node::Type type) : id(id), type(type) {}
 
 Node::~Node() {}
 
-EDTNode::EDTNode(ocrGuid_t id, u32 depc, ocrGuid_t* depv, u16 epoch) : Node(id, depc, depv, Node::EDT), epoch(epoch) {
-    
+inline void Node::addChild(Node* node) { children.push_back(node); }
+
+EDTNode::EDTNode(intptr_t id) : Node(id, Node::EDT) {}
+
+EDTNode::~EDTNode() {}
+
+inline void EDTNode::addSpawnEdges(Node* node) { spawnEdges.push_back(node); }
+
+inline Node* EDTNode::getSpawnEdge(u16 epoch) {
+    assert(spawnEdges.size() > epoch);
+    return spawnEdges[epoch];
 }
 
-EDTNode::~EDTNode() {
+DBNode::DBNode(intptr_t id, u16 accessMode)
+    : Node(id, Node::DB), accessMode(accessMode) {}
 
+DBNode::~DBNode() {}
+
+EventNode::EventNode(intptr_t id) : Node(id, Node::EVENT) {}
+
+EventNode::~EventNode() {}
+
+bool KeyComparator::operator()(const NodeKey& key1, const NodeKey& key2) const {
+    return key1.guid < key2.guid ? true : false;
 }
 
-DBNode::DBNode(ocrGuid_t id, u32 depc, ocrGuid_t* depv, u16 accessMode) : Node(id, depc, depv, Node::DB), accessMode(accessMode) {
-
-}
-
-DBNode::~DBNode() {
-
-}
-
-EventNode::EventNode(ocrGuid_t id, u32 depc, ocrGuid_t* depv) : Node(id, depc, depv, Node::EVENT) {
-
-}
-
-EventNode::~EventNode() {
-
-}
-
-AccessRecord::AccessRecord(ocrGuid_t& edtGuid, ADDRINT ip) : ip(ip) {
-    this->edtGuid.guid = edtGuid.guid;
+AccessRecord::AccessRecord(NodeKey& nodeKey, u16 epoch, ADDRINT ip)
+    : epoch(START_EPOCH), ip(ip) {
+    this->edtKey.guid = nodeKey.guid;
 }
 
 bool BytePage::hasWrite() {
@@ -194,13 +208,14 @@ void BytePage::update(AccessRecord* ar, bool isRead) {
     }
 }
 
-DBPage::DBPage(uintptr_t addr, u64 len) : startAddress(addr), len(len) {
+DBPage::DBPage(uintptr_t addr, u64 len) : startAddress(addr), length(len) {
     bytePageArray = new BytePage*[len];
     memset(bytePageArray, 0, sizeof(uintptr_t) * len);
 }
 
 void DBPage::updateBytePages(AccessRecord* ar, uintptr_t addr, u64 len,
                              bool isRead) {
+    assert(addr >= startAddress && addr + len <= startAddress + length);
     uintptr_t offset = addr - startAddress;
     for (u64 i = 0; i < len; i++) {
         if (!bytePageArray[offset + i]) {
@@ -211,13 +226,14 @@ void DBPage::updateBytePages(AccessRecord* ar, uintptr_t addr, u64 len,
 }
 
 BytePage* DBPage::getBytePage(uintptr_t addr) {
+    assert(addr >= startAddress && addr < startAddress + length);
     return bytePageArray[addr - startAddress];
 }
 
 int DBPage::compareAddr(uintptr_t addr) {
     if (addr < startAddress) {
         return 1;
-    } else if (addr < startAddress + len) {
+    } else if (addr < startAddress + length) {
         return 0;
     } else {
         return -1;
@@ -229,6 +245,9 @@ bool compareDB(DBPage* db1, DBPage* db2) {
 }
 
 bool ThreadLocalStore::searchDB(uintptr_t addr, DBPage** ptr, u64* offset) {
+#if DEBUG
+    cout << "search DB\n";
+#endif
     int start = 0;
     int end = acquiredDB.size() - 1;
     while (start <= end) {
@@ -243,6 +262,9 @@ bool ThreadLocalStore::searchDB(uintptr_t addr, DBPage** ptr, u64* offset) {
             if (ptr) {
                 *ptr = acquiredDB[middle];
             }
+#if DEBUG
+            cout << "search DB finish, true\n";
+#endif
             return true;
         }
     }
@@ -252,6 +274,9 @@ bool ThreadLocalStore::searchDB(uintptr_t addr, DBPage** ptr, u64* offset) {
     if (offset) {
         *offset = start;
     }
+#if DEBUG
+    cout << "search DB finish, false\n";
+#endif
     return false;
 }
 
@@ -270,7 +295,7 @@ void ThreadLocalStore::insertDB(ocrGuid_t& guid) {
     DBPage* dbPage = dbMap[guid.guid];
     u64 offset;
     searchDB(dbPage->startAddress, NULL, &offset);
-    acquiredDB.insert(acquiredDB.begin() + offset, dbPage); 
+    acquiredDB.insert(acquiredDB.begin() + offset, dbPage);
 }
 
 DBPage* ThreadLocalStore::getDB(uintptr_t addr) {
@@ -280,23 +305,37 @@ DBPage* ThreadLocalStore::getDB(uintptr_t addr) {
 }
 
 int usage() {
-    cout << "This tool visualizes the runtime dependency of OCR "
-            "applications and outputs computation graph."
-         << endl;
+    cout << "This tool detects data race i OCR program" << endl;
     return -1;
 }
 
 /**
  * Whether n2 is reachable from n1
  */
-bool isReachable(ocrGuid_t& n1, ocrGuid_t& n2) {
-    Node* node1 = computationGraph[n1.guid];
-    Node* node2 = computationGraph[n2.guid];
-    // TODO need to add assert
+bool isReachable(NodeKey& n1, u16 epoch1, NodeKey& n2) {
+    Node* node1 = computationGraph[n1];
+    Node* node2 = computationGraph[n2];
+    assert(node1->type == Node::EDT && node2->type == Node::EDT);
     bool result = false;
     set<Node*> accessedNodes;
     list<Node*> queue;
-    queue.push_back(node1);
+
+    if (n1.guid == n2.guid) {
+        return true;
+    }
+
+    // add all spawn edge and continue edge
+    EDTNode* edtNode1 = static_cast<EDTNode*>(node1);
+    for (u16 i = epoch1; i < edtNode1->spawnEdges.size(); i++) {
+        queue.push_back(edtNode1->spawnEdges[i]);
+    }
+
+    for (list<Node *>::iterator di = edtNode1->children.begin(),
+                                de = edtNode1->children.end();
+         di != de; di++) {
+        queue.push_back(*di);
+    }
+
     while (!queue.empty()) {
         Node* current = queue.front();
         queue.pop_front();
@@ -304,9 +343,19 @@ bool isReachable(ocrGuid_t& n1, ocrGuid_t& n2) {
         if (current == node2) {
             result = true;
             break;
+        } else if (current->Node::EDT) {
+            EDTNode* currentEdt = static_cast<EDTNode*>(current);
+            for (vector<Node *>::iterator si = currentEdt->spawnEdges.begin(),
+                                          se = currentEdt->spawnEdges.end();
+                 si != se; si++) {
+                Node* spawnedNode = *si;
+                if (accessedNodes.find(spawnedNode) == accessedNodes.end()) {
+                    queue.push_back(spawnedNode);
+                }
+            }
         }
-        for (list<Node *>::iterator di = current->descent.begin(),
-                                    de = current->descent.end();
+        for (list<Node *>::iterator di = current->children.begin(),
+                                    de = current->children.end();
              di != de; di++) {
             Node* node = *di;
             if (accessedNodes.find(node) == accessedNodes.end()) {
@@ -369,7 +418,9 @@ inline void initializeTLS(ocrGuid_t& edtGuid, u32 depc, ocrEdtDep_t* depv,
                           THREADID tid) {
     ThreadLocalStore* data =
         static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, tid));
-    data->edtGuid.guid = edtGuid.guid;
+    NodeKey edtKey = {edtGuid.guid};
+    data->currentEdt = static_cast<EDTNode*>(computationGraph[edtKey]);
+    data->epoch = START_EPOCH;
     data->initializeAcquiredDB(depc, depv);
 }
 // void argsMainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
@@ -388,7 +439,7 @@ inline void initializeTLS(ocrGuid_t& edtGuid, u32 depc, ocrEdtDep_t* depv,
 
 void afterEdtCreate(ocrGuid_t guid, ocrGuid_t templateGuid, u32 paramc,
                     u64* paramv, u32 depc, ocrGuid_t* depv, u16 properties,
-                    ocrGuid_t outputEvent) {
+                    ocrGuid_t outputEvent, ocrGuid_t parent) {
 #if DEBUG
     cout << "afterEdtCreate" << endl;
 #endif
@@ -397,15 +448,28 @@ void afterEdtCreate(ocrGuid_t guid, ocrGuid_t templateGuid, u32 paramc,
         exit(0);
     }
     THREADID threadid = PIN_ThreadId();
-    EDTNode* newEdtNode = new EDTNode(guid, depc, depv, properties);
+    EDTNode* newEdtNode = new EDTNode(guid.guid);
+    ThreadLocalStore* data =
+        static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, threadid));
+
+    NodeKey edtKey = {guid.guid};
+    assert(computationGraph.find(edtKey) == computationGraph.end());
     PIN_GetLock(&pinLock, threadid);
-    computationGraph[guid.guid] = newEdtNode;
+    computationGraph[edtKey] = newEdtNode;
     if (!isNullGuid(outputEvent)) {
-        Node* outputEventNode = new Node(outputEvent, 0, NULL, Node::EVENT);
-        computationGraph[outputEvent.guid] = outputEventNode;
-        newEdtNode->descent.push_back(outputEventNode);
+        EventNode* outputEventNode = new EventNode(outputEvent.guid);
+        NodeKey eventKey = {outputEvent.guid};
+        computationGraph[eventKey] = outputEventNode;
+        newEdtNode->addChild(outputEventNode);
     }
     PIN_ReleaseLock(&pinLock);
+
+    // add spawn edge & increase parent's epoch
+    if (!isNullGuid(parent)) {
+        data->currentEdt->addSpawnEdges(newEdtNode);
+        data->epoch++;
+    }
+
 #if DEBUG
     cout << "afterEdtCreate finish" << endl;
 #endif
@@ -417,12 +481,16 @@ void afterDbCreate(ocrGuid_t guid, void* addr, u64 len, u16 flags,
     cout << "afterDbCreate" << endl;
 #endif
     THREADID threadid = PIN_ThreadId();
-    DBNode* newDbNode = new DBNode(guid, 0, NULL, flags);
+    DBNode* newDbNode = new DBNode(guid.guid, flags);
     DBPage* dbPage = new DBPage((uintptr_t)addr, len);
+    NodeKey dbKey = {guid.guid};
+    assert(computationGraph.find(dbKey) == computationGraph.end());
     PIN_GetLock(&pinLock, threadid);
-    computationGraph[guid.guid] = newDbNode;
+    computationGraph[dbKey] = newDbNode;
     dbMap[guid.guid] = dbPage;
     PIN_ReleaseLock(&pinLock);
+
+    // new created DB is acquired by current EDT instantly
     ThreadLocalStore* data =
         static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, threadid));
     data->insertDB(guid);
@@ -437,9 +505,18 @@ void afterEventCreate(ocrGuid_t guid, ocrEventTypes_t eventType,
     cout << "afterEventCreate" << endl;
 #endif
     THREADID threadid = PIN_ThreadId();
-    EventNode* newEventNode = new EventNode(guid, 0, NULL);
+    EventNode* newEventNode = new EventNode(guid.guid);
+    NodeKey eventKey = {guid.guid};
+
+    // only for debug
+    if (computationGraph.find(eventKey) != computationGraph.end()) {
+        cout << guid.guid << "  " << computationGraph[eventKey]->id << "  "
+             << computationGraph[eventKey]->type << endl;
+    }
+
+    assert(computationGraph.find(eventKey) == computationGraph.end());
     PIN_GetLock(&pinLock, threadid);
-    computationGraph[guid.guid] = newEventNode;
+    computationGraph[eventKey] = newEventNode;
     PIN_ReleaseLock(&pinLock);
 #if DEBUG
     cout << "afterEventCreate finish" << endl;
@@ -451,19 +528,33 @@ void afterAddDependence(ocrGuid_t source, ocrGuid_t destination, u32 slot,
 #if DEBUG
     cout << "afterAddDependence" << endl;
 #endif
-    // cout << source << "->" << destination << endl;
+    //    cout << source.guid << "->" << destination.guid << endl;
+    NodeKey srcKey = {source.guid};
+    NodeKey dstKey = {destination.guid};
+    assert(computationGraph.find(dstKey) != computationGraph.end());
+
+    // only for debug
+    //    if (computationGraph.find(dstKey) == computationGraph.end()) {
+    //        for (map<NodeKey, Node*>::iterator mi = computationGraph.begin(),
+    //        me = computationGraph.end(); mi != me; mi++) {
+    //            cout << "id is " << mi->second->id << " " << mi->second->type
+    //            << endl;
+    //        }
+    //        computationGraph[dstKey] = new Node(destination.guid,
+    //        Node::INTERNAL);
+    //    }
+
     if (!isNullGuid(source)) {
         PIN_GetLock(&pinLock, PIN_ThreadId());
-        if (computationGraph.find(source.guid) == computationGraph.end()) {
-            computationGraph[source.guid] =
-                new Node(source, 0, NULL, Node::INTERNAL);
-        }
-        if (computationGraph.find(destination.guid) == computationGraph.end()) {
-            computationGraph[destination.guid] =
-                new Node(destination, 0, NULL, Node::INTERNAL);
-        }
-        computationGraph[source.guid]->descent.push_back(
-            computationGraph[destination.guid]);
+        //        if (computationGraph.find(srcKey) == computationGraph.end()) {
+        //            computationGraph[srcKey] =
+        //                new Node(source, 0, NULL, Node::INTERNAL);
+        //        }
+        //        if (computationGraph.find(dstKey) == computationGraph.end()) {
+        //            computationGraph[dstKey] =
+        //                new Node(destination, 0, NULL, Node::INTERNAL);
+        //        }
+        computationGraph[srcKey]->addChild(computationGraph[dstKey]);
         PIN_ReleaseLock(&pinLock);
     }
 #if DEBUG
@@ -476,21 +567,23 @@ void afterEventSatisfy(ocrGuid_t edtGuid, ocrGuid_t eventGuid,
 #if DEBUG
     cout << "afterEventSatisfy" << endl;
 #endif
-    if (computationGraph.find(edtGuid.guid) == computationGraph.end()) {
-        computationGraph[edtGuid.guid] =
-            new Node(edtGuid, 0, NULL, Node::INTERNAL);
-    }
-    assert(computationGraph.find(eventGuid.guid) != computationGraph.end());
-    assert(computationGraph.find(dataGuid.guid) != computationGraph.end());
-    // assert(computationGraph.find(edtGuid.guid) !=
-    // computationGraph.end());
-    Node* edt = computationGraph[edtGuid.guid];
-    Node* event = computationGraph[eventGuid.guid];
+    // According to spec, event satisfied after EDT terminates.
+    NodeKey eventKey = {eventGuid.guid};
+    NodeKey edtKey = {edtGuid.guid};
+    //    if (computationGraph.find(edtGuid.guid) == computationGraph.end()) {
+    //        computationGraph[edtGuid.guid] =
+    //            new Node(edtGuid, 0, NULL, Node::INTERNAL);
+    //    }
+    assert(computationGraph.find(eventKey) != computationGraph.end());
+    assert(computationGraph.find(edtKey) != computationGraph.end());
+
+    Node* edt = computationGraph[edtKey];
+    Node* event = computationGraph[eventKey];
     //	Node* db = computationGraph[dataGuid.guid];
     //	db->descent.splice(db->descent.end(), event->descent);
     //	event->descent.push_back(db);
     //	edt->descent.push_back(db);
-    edt->descent.push_back(event);
+    edt->addChild(event);
 #if DEBUG
     cout << "afterEventSatisfy finish" << endl;
 #endif
@@ -513,6 +606,23 @@ void preEdt(THREADID tid, ocrGuid_t edtGuid, u32 paramc, u64* paramv, u32 depc,
 #endif
 }
 
+void outputLink(ostream& out, Node* n1, u16 epoch1, Node* n2, u16 epoch2,
+                Node::EdgeType edgeType) {
+    out << '\"' << n1->id;
+    if (n1->type == Node::EDT) {
+        out << '#' << epoch1;
+    }
+    out << '\"';
+    out << " -> ";
+    out << '\"' << n2->id;
+    if (n2->type == Node::EDT) {
+        out << '#' << epoch2;
+    }
+    out << '\"';
+    out << ' ' << edgeColorSchemes[edgeType].toString();
+    out << ';' << endl;
+}
+
 void CG2Dot() {
 #if DEBUG
     cout << "CG2Dot" << endl;
@@ -521,23 +631,53 @@ void CG2Dot() {
     out.open("cg.dot");
     out << "digraph ComputationGraph {" << endl;
     cout << "total node num: " << computationGraph.size() << endl;
-    for (map<intptr_t, Node *>::iterator ci = computationGraph.begin(),
-                                         ce = computationGraph.end();
+    for (map<NodeKey, Node *>::iterator ci = computationGraph.begin(),
+                                        ce = computationGraph.end();
          ci != ce; ci++) {
         Node* node = ci->second;
-        out << node->id << colorSchemes[node->type].toString() << ";" << endl;
+        string nodeColor = nodeColorSchemes[node->type].toString();
+        if (node->type == Node::EDT) {
+            EDTNode* edtNode = static_cast<EDTNode*>(node);
+            for (u16 i = 0; i <= edtNode->spawnEdges.size(); i++) {
+                out << '\"' << node->id << "#" << i << '\"' << nodeColor << ";"
+                    << endl;
+            }
+        } else {
+            out << '\"' << node->id << '\"' << nodeColor << ";" << endl;
+        }
     }
-    for (map<intptr_t, Node *>::iterator ci = computationGraph.begin(),
-                                         ce = computationGraph.end();
+
+    for (map<NodeKey, Node *>::iterator ci = computationGraph.begin(),
+                                        ce = computationGraph.end();
          ci != ce; ci++) {
         // cout << (uint64_t)ci->second << endl;
         Node* node = ci->second;
-        for (list<Node *>::iterator ni = node->descent.begin(),
-                                    ne = node->descent.end();
-             ni != ne; ni++) {
-            out << node->id << " -> " << (*ni)->id << ";" << endl;
-            // cout << (uint64_t)node << "<-----" << (uint64_t)*ni
-            // << endl;
+        if (node->type == Node::EDT) {
+            EDTNode* edtNode = static_cast<EDTNode*>(node);
+            for (u16 i = 0; i < edtNode->spawnEdges.size(); i++) {
+                outputLink(out, edtNode, i, edtNode, i + 1, Node::CONTINUE);
+            }
+
+            for (u16 i = 0; i < edtNode->spawnEdges.size(); i++) {
+                outputLink(out, edtNode, i, edtNode->getSpawnEdge(i),
+                           START_EPOCH, Node::SPAWN);
+            }
+
+            for (list<Node *>::iterator ni = edtNode->children.begin(),
+                                        ne = edtNode->children.end();
+                 ni != ne; ni++) {
+                Node* pointedNode = *ni;
+                outputLink(out, edtNode, edtNode->spawnEdges.size(),
+                           pointedNode, START_EPOCH, Node::JOIN);
+            }
+        } else {
+            for (list<Node *>::iterator ni = node->children.begin(),
+                                        ne = node->children.end();
+                 ni != ne; ni++) {
+                Node* pointedNode = *ni;
+                outputLink(out, node, START_EPOCH, pointedNode, START_EPOCH,
+                           Node::JOIN);
+            }
         }
     }
     out << "}";
@@ -585,7 +725,8 @@ void overload(IMG img, void* v) {
                 PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_AGGREGATE(ocrGuid_t),
                 PIN_PARG(u32), PIN_PARG(u64*), PIN_PARG(u32),
                 PIN_PARG(ocrGuid_t*), PIN_PARG(u16),
-                PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_END());
+                PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_AGGREGATE(ocrGuid_t),
+                PIN_PARG_END());
             RTN_ReplaceSignature(
                 rtn, AFUNPTR(afterEdtCreate), IARG_PROTOTYPE,
                 proto_notifyEdtCreate, IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
@@ -593,7 +734,8 @@ void overload(IMG img, void* v) {
                 2, IARG_FUNCARG_ENTRYPOINT_VALUE, 3,
                 IARG_FUNCARG_ENTRYPOINT_VALUE, 4, IARG_FUNCARG_ENTRYPOINT_VALUE,
                 5, IARG_FUNCARG_ENTRYPOINT_VALUE, 6,
-                IARG_FUNCARG_ENTRYPOINT_VALUE, 7, IARG_FUNCARG_ENTRYPOINT_VALUE, 8, IARG_END);
+                IARG_FUNCARG_ENTRYPOINT_VALUE, 7, IARG_FUNCARG_ENTRYPOINT_VALUE,
+                8, IARG_END);
             PROTO_Free(proto_notifyEdtCreate);
         }
 
@@ -690,7 +832,7 @@ void overload(IMG img, void* v) {
         rtn = RTN_FindByName(img, "notifyEdtStart");
         if (RTN_Valid(rtn)) {
 #if DEBUG
-            cout << "replace proto_notifyEdtStart" << endl;
+            cout << "replace notifyEdtStart" << endl;
 #endif
             PROTO proto_notifyEdtStart = PROTO_Allocate(
                 PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyEdtStart",
@@ -723,80 +865,101 @@ void outputRaceInfo(ADDRINT ip1, bool ip1IsRead, ADDRINT ip2, bool ip2IsRead) {
     } else {
         ip2Type = "Write";
     }
-    
+
     PIN_LockClient();
     PIN_GetSourceLocation(ip1, &ip1Column, &ip1Line, &ip1File);
     PIN_GetSourceLocation(ip2, &ip2Column, &ip2Line, &ip2File);
     PIN_UnlockClient();
     cout << ip1Type << "-" << ip2Type << " race detect!" << endl;
-    cout << "first op is " << ip1 << " in " << ip1File << ": " << ip1Line << ": " << ip1Column << endl;
-    cout << "second op is " << ip2 << " in " << ip2File << ": " << ip2Line << ": " << ip2Column << endl;
+    cout << "first op is " << ip1 << " in " << ip1File << ": " << ip1Line
+         << ": " << ip1Column << endl;
+    cout << "second op is " << ip2 << " in " << ip2File << ": " << ip2Line
+         << ": " << ip2Column << endl;
     abort();
-
 }
 
-void checkDataRace(ADDRINT ip, ocrGuid_t& guid, bool isRead, BytePage* bytePage) {
+void checkDataRace(ADDRINT ip, NodeKey& nodeKey, bool isRead,
+                   BytePage* bytePage) {
     if (isRead) {
         if (bytePage->hasWrite()) {
-            bool mhp = !isReachable(bytePage->write->edtGuid, guid);
+            bool mhp = !isReachable(bytePage->write->edtKey,
+                                    bytePage->write->epoch, nodeKey);
             if (mhp) {
                 outputRaceInfo(bytePage->write->ip, false, ip, true);
             }
         }
     } else {
         if (bytePage->hasWrite()) {
-            bool mhp = !isReachable(bytePage->write->edtGuid, guid);
+            bool mhp = !isReachable(bytePage->write->edtKey,
+                                    bytePage->write->epoch, nodeKey);
             if (mhp) {
                 outputRaceInfo(bytePage->write->ip, false, ip, false);
             }
-
         }
-        if (bytePage->hasWrite()) {
+        if (bytePage->hasRead()) {
             for (list<AccessRecord *>::iterator ai = bytePage->read.begin(),
                                                 ae = bytePage->read.end();
                  ai != ae; ai++) {
-                bool mhp = !isReachable((*ai)->edtGuid, guid);
+                AccessRecord* ar = *ai;
+                bool mhp = !isReachable(ar->edtKey, ar->epoch, nodeKey);
                 if (mhp) {
                     outputRaceInfo((*ai)->ip, true, ip, false);
                 }
-
             }
         }
     }
 }
 
 void recordMemRead(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
-    THREADID tid = PIN_ThreadId();    
-    ThreadLocalStore* data =
-        static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, tid));
-    DBPage* dbPage = data->getDB((uintptr_t)addr);
-    if (dbPage) {
-        for (uint32_t i = 0; i < size; i++) {
-            BytePage* current = dbPage->getBytePage((uintptr_t)addr + i);
-            if (current) {
-                checkDataRace(ip, data->edtGuid, true, current);
-            }
-        }
-        AccessRecord* ar = new AccessRecord(data->edtGuid, ip);
-        dbPage->updateBytePages(ar, (uintptr_t)addr, size, true);
-    }
-}
-
-void recordMemWrite(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
+#if DEBUG
+    cout << "record memory read\n";
+#endif
     THREADID tid = PIN_ThreadId();
     ThreadLocalStore* data =
         static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, tid));
-    DBPage* dbPage = data->getDB((uintptr_t)addr);
-    if (dbPage) {
-        for (uint32_t i = 0; i < size; i++) {
-            BytePage* current = dbPage->getBytePage((uintptr_t)addr + i);
-            if (current) {
-                checkDataRace(ip, data->edtGuid, false, current);
+    if (data->currentEdt) {
+        DBPage* dbPage = data->getDB((uintptr_t)addr);
+        NodeKey edtKey = {data->currentEdt->id};
+        if (dbPage) {
+            for (uint32_t i = 0; i < size; i++) {
+                BytePage* current = dbPage->getBytePage((uintptr_t)addr + i);
+                if (current) {
+                    checkDataRace(ip, edtKey, true, current);
+                }
             }
+            AccessRecord* ar = new AccessRecord(edtKey, data->epoch, ip);
+            dbPage->updateBytePages(ar, (uintptr_t)addr, size, true);
         }
-        AccessRecord* ar = new AccessRecord(data->edtGuid, ip);
-        dbPage->updateBytePages(ar, (uintptr_t)addr, size, false);
     }
+#if DEBUG
+    cout << "record memory read finish\n";
+#endif
+}
+
+void recordMemWrite(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
+#if DEBUG
+    cout << "record memory write\n";
+#endif
+    THREADID tid = PIN_ThreadId();
+    ThreadLocalStore* data =
+        static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, tid));
+    if (data->currentEdt) {
+        DBPage* dbPage = data->getDB((uintptr_t)addr);
+        NodeKey edtKey = {data->currentEdt->id};
+        if (dbPage) {
+            for (uint32_t i = 0; i < size; i++) {
+                BytePage* current = dbPage->getBytePage((uintptr_t)addr + i);
+                if (current) {
+                    checkDataRace(ip, edtKey, false, current);
+                }
+            }
+            AccessRecord* ar = new AccessRecord(edtKey, data->epoch, ip);
+            dbPage->updateBytePages(ar, (uintptr_t)addr, size, false);
+        }
+    }
+#if DEBUG
+    cout << "record memory write finish\n";
+#endif
 }
 
 void instrumentInstruction(INS ins) {
@@ -835,6 +998,9 @@ void instrumentRoutine(RTN rtn) {
 }
 
 void instrumentImage(IMG img, void* v) {
+#if DEBUG
+    cout << "instrument image\n";
+#endif
     if (isUserCodeImg(img)) {
         for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
             for (RTN rtn = SEC_RtnHead(sec); RTN_Valid(rtn);
@@ -843,6 +1009,9 @@ void instrumentImage(IMG img, void* v) {
             }
         }
     }
+#if DEBUG
+    cout << "instrument image finish\n";
+#endif
 }
 
 void threadStart(THREADID tid, CONTEXT* ctxt, int32_t flags, void* v) {
@@ -860,10 +1029,15 @@ void threadFini(THREADID tid, const CONTEXT* ctxt, int32_t code, void* v) {
 void initColorScheme() {
     ColorScheme a("green", "filled"), b("yellow", "filled"),
         c("blue", "filled"), d("gray", "filled");
-    colorSchemes[Node::EDT] = a;
-    colorSchemes[Node::DB] = b;
-    colorSchemes[Node::EVENT] = c;
-    colorSchemes[Node::INTERNAL] = d;
+    nodeColorSchemes[Node::EDT] = a;
+    nodeColorSchemes[Node::DB] = b;
+    nodeColorSchemes[Node::EVENT] = c;
+    nodeColorSchemes[Node::INTERNAL] = d;
+
+    ColorScheme e("red", "bold"), f("cyan", "bold"), g("black", "bold");
+    edgeColorSchemes[Node::SPAWN] = e;
+    edgeColorSchemes[Node::JOIN] = f;
+    edgeColorSchemes[Node::CONTINUE] = g;
 }
 
 void initSkippedLibrary() {
