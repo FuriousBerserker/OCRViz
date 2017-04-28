@@ -4,7 +4,7 @@ OCR_HOME=/home/berserker/main/workspace/Research/OCRDataRaceDetection/OCRDebugRu
 
 APP_HOME=/home/berserker/main/src/ocr-1.1/xstg/apps/apps
 
-export OCR_INSTALL=$OCR_HOME/install && export LD_LIBRARY_PATH=$OCR_INSTALL/lib:$APP_HOME/libs/install/x86/lib:$LD_LIBRARY_PATH && export OCR_CONFIG=$APP_HOME/examples/$1/install/x86/generated.cfg
+export OCR_INSTALL=$OCR_HOME/install && export LD_LIBRARY_PATH=$OCR_INSTALL/lib:$APP_HOME/libs/install/x86/lib:$LD_LIBRARY_PATH && export OCR_CONFIG=$OCR_HOME/install/share/ocr/scripts/Configs/default.cfg
 
 EXE_POS="$APP_HOME/examples/$1/install/x86/$1 ${@:2}"
 

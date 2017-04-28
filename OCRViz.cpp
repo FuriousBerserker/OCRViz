@@ -12,7 +12,7 @@
 #include "ocr-types.h"
 #include "pin.H"
 #include "viz-util.hpp"
-#define DEBUG 1
+#define DEBUG 0
 
 #define START_EPOCH 0
 using namespace ::std;
@@ -870,12 +870,14 @@ void outputRaceInfo(ADDRINT ip1, bool ip1IsRead, ADDRINT ip2, bool ip2IsRead) {
     PIN_GetSourceLocation(ip1, &ip1Column, &ip1Line, &ip1File);
     PIN_GetSourceLocation(ip2, &ip2Column, &ip2Line, &ip2File);
     PIN_UnlockClient();
+//    if (!ip1File.empty() && !ip2File.empty()) {
     cout << ip1Type << "-" << ip2Type << " race detect!" << endl;
     cout << "first op is " << ip1 << " in " << ip1File << ": " << ip1Line
          << ": " << ip1Column << endl;
     cout << "second op is " << ip2 << " in " << ip2File << ": " << ip2Line
          << ": " << ip2Column << endl;
     abort();
+//    }
 }
 
 void checkDataRace(ADDRINT ip, NodeKey& nodeKey, bool isRead,
@@ -1060,7 +1062,7 @@ int main(int argc, char* argv[]) {
         return usage();
     }
     userCodeImg = argv[argc - 1];
-
+    cout << "User image is " << userCodeImg << endl;
     IMG_AddInstrumentFunction(overload, 0);
     IMG_AddInstrumentFunction(instrumentImage, 0);
     PIN_AddThreadStartFunction(threadStart, 0);
