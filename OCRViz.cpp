@@ -133,10 +133,8 @@ vector<string> skippedLibraries;
 // user code image name
 string userCodeImg;
 
-// pin obj
-PIN_LOCK pinLock;
-
-TLS_KEY tlsKey;
+// thread local information
+ThreadLocalStore tls;
 
 ColorScheme::ColorScheme(string color, string style)
     : color(color), style(style) {}
@@ -313,9 +311,11 @@ int usage() {
  * Whether n2 is reachable from n1
  */
 bool isReachable(NodeKey& n1, u16 epoch1, NodeKey& n2) {
+//    assert(computationGraph.find(n1) != computationGraph.end());
+//    assert(computationGraph.find(n2) != computationGraph.end());
     Node* node1 = computationGraph[n1];
     Node* node2 = computationGraph[n2];
-    assert(node1->type == Node::EDT && node2->type == Node::EDT);
+//    assert(node1->type == Node::EDT && node2->type == Node::EDT);
     bool result = false;
     set<Node*> accessedNodes;
     list<Node*> queue;
@@ -416,12 +416,10 @@ bool isIgnorableIns(INS ins) {
 
 inline void initializeTLS(ocrGuid_t& edtGuid, u32 depc, ocrEdtDep_t* depv,
                           THREADID tid) {
-    ThreadLocalStore* data =
-        static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, tid));
     NodeKey edtKey = {edtGuid.guid};
-    data->currentEdt = static_cast<EDTNode*>(computationGraph[edtKey]);
-    data->epoch = START_EPOCH;
-    data->initializeAcquiredDB(depc, depv);
+    tls.currentEdt = static_cast<EDTNode*>(computationGraph[edtKey]);
+    tls.epoch = START_EPOCH;
+    tls.initializeAcquiredDB(depc, depv);
 }
 // void argsMainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 //#if DEBUG
@@ -447,27 +445,20 @@ void afterEdtCreate(ocrGuid_t guid, ocrGuid_t templateGuid, u32 paramc,
         cerr << "error" << endl;
         exit(0);
     }
-    THREADID threadid = PIN_ThreadId();
     EDTNode* newEdtNode = new EDTNode(guid.guid);
-    ThreadLocalStore* data =
-        static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, threadid));
-
     NodeKey edtKey = {guid.guid};
-    assert(computationGraph.find(edtKey) == computationGraph.end());
-    PIN_GetLock(&pinLock, threadid);
+//    assert(computationGraph.find(edtKey) == computationGraph.end());
     computationGraph[edtKey] = newEdtNode;
     if (!isNullGuid(outputEvent)) {
-        EventNode* outputEventNode = new EventNode(outputEvent.guid);
         NodeKey eventKey = {outputEvent.guid};
-        computationGraph[eventKey] = outputEventNode;
-        newEdtNode->addChild(outputEventNode);
+//        assert(computationGraph.find(eventKey) != computationGraph.end());
+        newEdtNode->addChild(computationGraph[eventKey]);
     }
-    PIN_ReleaseLock(&pinLock);
 
     // add spawn edge & increase parent's epoch
     if (!isNullGuid(parent)) {
-        data->currentEdt->addSpawnEdges(newEdtNode);
-        data->epoch++;
+        tls.currentEdt->addSpawnEdges(newEdtNode);
+        tls.epoch++;
     }
 
 #if DEBUG
@@ -480,20 +471,15 @@ void afterDbCreate(ocrGuid_t guid, void* addr, u64 len, u16 flags,
 #if DEBUG
     cout << "afterDbCreate" << endl;
 #endif
-    THREADID threadid = PIN_ThreadId();
     DBNode* newDbNode = new DBNode(guid.guid, flags);
     DBPage* dbPage = new DBPage((uintptr_t)addr, len);
     NodeKey dbKey = {guid.guid};
-    assert(computationGraph.find(dbKey) == computationGraph.end());
-    PIN_GetLock(&pinLock, threadid);
+//    assert(computationGraph.find(dbKey) == computationGraph.end());
     computationGraph[dbKey] = newDbNode;
     dbMap[guid.guid] = dbPage;
-    PIN_ReleaseLock(&pinLock);
 
     // new created DB is acquired by current EDT instantly
-    ThreadLocalStore* data =
-        static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, threadid));
-    data->insertDB(guid);
+    tls.insertDB(guid);
 #if DEBUG
     cout << "afterDbCreate finish" << endl;
 #endif
@@ -504,20 +490,10 @@ void afterEventCreate(ocrGuid_t guid, ocrEventTypes_t eventType,
 #if DEBUG
     cout << "afterEventCreate" << endl;
 #endif
-    THREADID threadid = PIN_ThreadId();
     EventNode* newEventNode = new EventNode(guid.guid);
     NodeKey eventKey = {guid.guid};
-
-    // only for debug
-    if (computationGraph.find(eventKey) != computationGraph.end()) {
-        cout << guid.guid << "  " << computationGraph[eventKey]->id << "  "
-             << computationGraph[eventKey]->type << endl;
-    }
-
-    assert(computationGraph.find(eventKey) == computationGraph.end());
-    PIN_GetLock(&pinLock, threadid);
+//    assert(computationGraph.find(eventKey) == computationGraph.end());
     computationGraph[eventKey] = newEventNode;
-    PIN_ReleaseLock(&pinLock);
 #if DEBUG
     cout << "afterEventCreate finish" << endl;
 #endif
@@ -528,34 +504,14 @@ void afterAddDependence(ocrGuid_t source, ocrGuid_t destination, u32 slot,
 #if DEBUG
     cout << "afterAddDependence" << endl;
 #endif
-    //    cout << source.guid << "->" << destination.guid << endl;
+//    cout << source.guid << "->" << destination.guid << endl;
     NodeKey srcKey = {source.guid};
     NodeKey dstKey = {destination.guid};
-    assert(computationGraph.find(dstKey) != computationGraph.end());
+//    assert(isNullGuid(source) || computationGraph.find(srcKey) != computationGraph.end());
+//    assert(computationGraph.find(dstKey) != computationGraph.end());
 
-    // only for debug
-    //    if (computationGraph.find(dstKey) == computationGraph.end()) {
-    //        for (map<NodeKey, Node*>::iterator mi = computationGraph.begin(),
-    //        me = computationGraph.end(); mi != me; mi++) {
-    //            cout << "id is " << mi->second->id << " " << mi->second->type
-    //            << endl;
-    //        }
-    //        computationGraph[dstKey] = new Node(destination.guid,
-    //        Node::INTERNAL);
-    //    }
-
-    if (!isNullGuid(source)) {
-        PIN_GetLock(&pinLock, PIN_ThreadId());
-        //        if (computationGraph.find(srcKey) == computationGraph.end()) {
-        //            computationGraph[srcKey] =
-        //                new Node(source, 0, NULL, Node::INTERNAL);
-        //        }
-        //        if (computationGraph.find(dstKey) == computationGraph.end()) {
-        //            computationGraph[dstKey] =
-        //                new Node(destination, 0, NULL, Node::INTERNAL);
-        //        }
+    if (!isNullGuid(source) && computationGraph[srcKey]->type != Node::DB) {
         computationGraph[srcKey]->addChild(computationGraph[dstKey]);
-        PIN_ReleaseLock(&pinLock);
     }
 #if DEBUG
     cout << "afterAddDependence finish" << endl;
@@ -570,19 +526,11 @@ void afterEventSatisfy(ocrGuid_t edtGuid, ocrGuid_t eventGuid,
     // According to spec, event satisfied after EDT terminates.
     NodeKey eventKey = {eventGuid.guid};
     NodeKey edtKey = {edtGuid.guid};
-    //    if (computationGraph.find(edtGuid.guid) == computationGraph.end()) {
-    //        computationGraph[edtGuid.guid] =
-    //            new Node(edtGuid, 0, NULL, Node::INTERNAL);
-    //    }
-    assert(computationGraph.find(eventKey) != computationGraph.end());
-    assert(computationGraph.find(edtKey) != computationGraph.end());
+//    assert(computationGraph.find(eventKey) != computationGraph.end());
+//    assert(computationGraph.find(edtKey) != computationGraph.end());
 
     Node* edt = computationGraph[edtKey];
     Node* event = computationGraph[eventKey];
-    //	Node* db = computationGraph[dataGuid.guid];
-    //	db->descent.splice(db->descent.end(), event->descent);
-    //	event->descent.push_back(db);
-    //	edt->descent.push_back(db);
     edt->addChild(event);
 #if DEBUG
     cout << "afterEventSatisfy finish" << endl;
@@ -916,12 +864,9 @@ void recordMemRead(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
 #if DEBUG
     cout << "record memory read\n";
 #endif
-    THREADID tid = PIN_ThreadId();
-    ThreadLocalStore* data =
-        static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, tid));
-    if (data->currentEdt) {
-        DBPage* dbPage = data->getDB((uintptr_t)addr);
-        NodeKey edtKey = {data->currentEdt->id};
+    if (tls.currentEdt) {
+        DBPage* dbPage = tls.getDB((uintptr_t)addr);
+        NodeKey edtKey = {tls.currentEdt->id};
         if (dbPage) {
             for (uint32_t i = 0; i < size; i++) {
                 BytePage* current = dbPage->getBytePage((uintptr_t)addr + i);
@@ -929,7 +874,7 @@ void recordMemRead(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
                     checkDataRace(ip, edtKey, true, current);
                 }
             }
-            AccessRecord* ar = new AccessRecord(edtKey, data->epoch, ip);
+            AccessRecord* ar = new AccessRecord(edtKey, tls.epoch, ip);
             dbPage->updateBytePages(ar, (uintptr_t)addr, size, true);
         }
     }
@@ -942,12 +887,9 @@ void recordMemWrite(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
 #if DEBUG
     cout << "record memory write\n";
 #endif
-    THREADID tid = PIN_ThreadId();
-    ThreadLocalStore* data =
-        static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, tid));
-    if (data->currentEdt) {
-        DBPage* dbPage = data->getDB((uintptr_t)addr);
-        NodeKey edtKey = {data->currentEdt->id};
+    if (tls.currentEdt) {
+        DBPage* dbPage = tls.getDB((uintptr_t)addr);
+        NodeKey edtKey = {tls.currentEdt->id};
         if (dbPage) {
             for (uint32_t i = 0; i < size; i++) {
                 BytePage* current = dbPage->getBytePage((uintptr_t)addr + i);
@@ -955,7 +897,7 @@ void recordMemWrite(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
                     checkDataRace(ip, edtKey, false, current);
                 }
             }
-            AccessRecord* ar = new AccessRecord(edtKey, data->epoch, ip);
+            AccessRecord* ar = new AccessRecord(edtKey, tls.epoch, ip);
             dbPage->updateBytePages(ar, (uintptr_t)addr, size, false);
         }
     }
@@ -1016,18 +958,6 @@ void instrumentImage(IMG img, void* v) {
 #endif
 }
 
-void threadStart(THREADID tid, CONTEXT* ctxt, int32_t flags, void* v) {
-    ThreadLocalStore* store = new ThreadLocalStore();
-    PIN_SetThreadData(tlsKey, store, tid);
-}
-
-void threadFini(THREADID tid, const CONTEXT* ctxt, int32_t code, void* v) {
-    ThreadLocalStore* data =
-        static_cast<ThreadLocalStore*>(PIN_GetThreadData(tlsKey, tid));
-    delete data;
-    PIN_SetThreadData(tlsKey, NULL, tid);
-}
-
 void initColorScheme() {
     ColorScheme a("green", "filled"), b("yellow", "filled"),
         c("blue", "filled"), d("gray", "filled");
@@ -1055,8 +985,6 @@ void init() {
 }
 
 int main(int argc, char* argv[]) {
-    PIN_InitLock(&pinLock);
-    tlsKey = PIN_CreateThreadDataKey(0);
     PIN_InitSymbols();
     if (PIN_Init(argc, argv)) {
         return usage();
@@ -1065,9 +993,6 @@ int main(int argc, char* argv[]) {
     cout << "User image is " << userCodeImg << endl;
     IMG_AddInstrumentFunction(overload, 0);
     IMG_AddInstrumentFunction(instrumentImage, 0);
-    PIN_AddThreadStartFunction(threadStart, 0);
-    PIN_AddThreadFiniFunction(threadFini, 0);
-    // PIN_AddFiniFunction(fini, 0);
     init();
     PIN_StartProgram();
     return 0;
