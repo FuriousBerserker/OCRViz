@@ -12,7 +12,9 @@
 #include "ocr-types.h"
 #include "pin.H"
 #include "viz-util.hpp"
+
 #define DEBUG 0
+#define OUTPUT_CG 0
 
 #define START_EPOCH 0
 using namespace ::std;
@@ -84,10 +86,10 @@ class AccessRecord {
 class BytePage {
    public:
     AccessRecord* write;
-    list<AccessRecord*> read;
+    map<NodeKey, AccessRecord*, KeyComparator> read;
     bool hasWrite();
     bool hasRead();
-    void update(AccessRecord* ar, bool isRead);
+    void update(NodeKey key, AccessRecord* ar, bool isRead);
 };
 
 class DBPage {
@@ -96,7 +98,7 @@ class DBPage {
     u64 length;
     BytePage** bytePageArray;
     DBPage(uintptr_t addr, u64 len);
-    void updateBytePages(AccessRecord* ar, uintptr_t addr, u64 len,
+    void updateBytePages(NodeKey key, AccessRecord* ar, uintptr_t addr, u64 len,
                          bool isRead);
     BytePage* getBytePage(uintptr_t addr);
     int compareAddr(uintptr_t addr);
@@ -198,9 +200,9 @@ bool BytePage::hasRead() {
     }
 }
 
-void BytePage::update(AccessRecord* ar, bool isRead) {
+void BytePage::update(NodeKey key, AccessRecord* ar, bool isRead) {
     if (isRead) {
-        read.push_back(ar);
+        read[key] = ar;
     } else {
         write = ar;
     }
@@ -211,7 +213,7 @@ DBPage::DBPage(uintptr_t addr, u64 len) : startAddress(addr), length(len) {
     memset(bytePageArray, 0, sizeof(uintptr_t) * len);
 }
 
-void DBPage::updateBytePages(AccessRecord* ar, uintptr_t addr, u64 len,
+void DBPage::updateBytePages(NodeKey key, AccessRecord* ar, uintptr_t addr, u64 len,
                              bool isRead) {
     assert(addr >= startAddress && addr + len <= startAddress + length);
     uintptr_t offset = addr - startAddress;
@@ -219,7 +221,7 @@ void DBPage::updateBytePages(AccessRecord* ar, uintptr_t addr, u64 len,
         if (!bytePageArray[offset + i]) {
             bytePageArray[offset + i] = new BytePage();
         }
-        bytePageArray[offset + i]->update(ar, isRead);
+        bytePageArray[offset + i]->update(key, ar, isRead);
     }
 }
 
@@ -313,6 +315,7 @@ int usage() {
 bool isReachable(NodeKey& n1, u16 epoch1, NodeKey& n2) {
 //    assert(computationGraph.find(n1) != computationGraph.end());
 //    assert(computationGraph.find(n2) != computationGraph.end());
+    cout << n1.guid << " -----> " << n2.guid << endl;
     Node* node1 = computationGraph[n1];
     Node* node2 = computationGraph[n2];
 //    assert(node1->type == Node::EDT && node2->type == Node::EDT);
@@ -636,7 +639,10 @@ void fini() {
 #if DEBUG
     cout << "fini" << endl;
 #endif
+
+#if OUTPUT_CG
     CG2Dot();
+#endif
 }
 
 void overload(IMG img, void* v) {
@@ -847,13 +853,13 @@ void checkDataRace(ADDRINT ip, NodeKey& nodeKey, bool isRead,
             }
         }
         if (bytePage->hasRead()) {
-            for (list<AccessRecord *>::iterator ai = bytePage->read.begin(),
+            for (map<NodeKey, AccessRecord *>::iterator ai = bytePage->read.begin(),
                                                 ae = bytePage->read.end();
                  ai != ae; ai++) {
-                AccessRecord* ar = *ai;
+                AccessRecord* ar = ai->second;
                 bool mhp = !isReachable(ar->edtKey, ar->epoch, nodeKey);
                 if (mhp) {
-                    outputRaceInfo((*ai)->ip, true, ip, false);
+                    outputRaceInfo(ar->ip, true, ip, false);
                 }
             }
         }
@@ -875,7 +881,7 @@ void recordMemRead(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
                 }
             }
             AccessRecord* ar = new AccessRecord(edtKey, tls.epoch, ip);
-            dbPage->updateBytePages(ar, (uintptr_t)addr, size, true);
+            dbPage->updateBytePages(edtKey, ar, (uintptr_t)addr, size, true);
         }
     }
 #if DEBUG
@@ -898,7 +904,7 @@ void recordMemWrite(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
                 }
             }
             AccessRecord* ar = new AccessRecord(edtKey, tls.epoch, ip);
-            dbPage->updateBytePages(ar, (uintptr_t)addr, size, false);
+            dbPage->updateBytePages(edtKey, ar, (uintptr_t)addr, size, false);
         }
     }
 #if DEBUG
