@@ -13,7 +13,7 @@
 #include "pin.H"
 #include "viz-util.hpp"
 
-#define DEBUG 0
+#define DEBUG 1
 #define OUTPUT_CG 0
 
 #define START_EPOCH 0
@@ -70,7 +70,7 @@ struct NodeKey {
     intptr_t guid;
 };
 
-class KeyComparator {
+class NodeKeyComparator {
    public:
     bool operator()(const NodeKey& key1, const NodeKey& key2) const;
 };
@@ -86,7 +86,7 @@ class AccessRecord {
 class BytePage {
    public:
     AccessRecord* write;
-    map<NodeKey, AccessRecord*, KeyComparator> read;
+    map<NodeKey, AccessRecord*, NodeKeyComparator> read;
     bool hasWrite();
     bool hasRead();
     void update(NodeKey key, AccessRecord* ar, bool isRead);
@@ -117,8 +117,41 @@ class ThreadLocalStore {
     bool searchDB(uintptr_t addr, DBPage** ptr, u64* offset);
 };
 
+struct CacheKey {
+    intptr_t srcGuid;
+    intptr_t destGuid;
+};
+
+class CacheRecord {
+    public:
+    u16 srcEpoch;
+    bool isReachable;
+
+    public:
+    CacheRecord(u16 srcEpoch, bool isReachable);
+};
+
+struct SearchResult {
+    bool isContain;
+    CacheRecord* record;
+};
+
+class CacheKeyComparator {
+   public:
+    bool operator()(const CacheKey& key1, const CacheKey& key2) const;
+};
+
+class Cache {
+   public:
+    void insertRecord(CacheKey& key, u16 epoch, bool result);
+    SearchResult search(CacheKey& key);
+
+   private:
+    map<CacheKey, CacheRecord*, CacheKeyComparator> history;
+};
+
 // CG
-map<NodeKey, Node*, KeyComparator> computationGraph;
+map<NodeKey, Node*, NodeKeyComparator> computationGraph;
 
 // node color scheme binding
 map<Node::Type, ColorScheme> nodeColorSchemes;
@@ -128,6 +161,9 @@ map<Node::EdgeType, ColorScheme> edgeColorSchemes;
 
 // EDT acquired DB
 map<intptr_t, DBPage*> dbMap;
+
+// Cache for reachability check;
+Cache cache;
 
 // library list
 vector<string> skippedLibraries;
@@ -175,7 +211,8 @@ EventNode::EventNode(intptr_t id) : Node(id, Node::EVENT) {}
 
 EventNode::~EventNode() {}
 
-bool KeyComparator::operator()(const NodeKey& key1, const NodeKey& key2) const {
+bool NodeKeyComparator::operator()(const NodeKey& key1,
+                                   const NodeKey& key2) const {
     return key1.guid < key2.guid ? true : false;
 }
 
@@ -213,8 +250,8 @@ DBPage::DBPage(uintptr_t addr, u64 len) : startAddress(addr), length(len) {
     memset(bytePageArray, 0, sizeof(uintptr_t) * len);
 }
 
-void DBPage::updateBytePages(NodeKey key, AccessRecord* ar, uintptr_t addr, u64 len,
-                             bool isRead) {
+void DBPage::updateBytePages(NodeKey key, AccessRecord* ar, uintptr_t addr,
+                             u64 len, bool isRead) {
     assert(addr >= startAddress && addr + len <= startAddress + length);
     uintptr_t offset = addr - startAddress;
     for (u64 i = 0; i < len; i++) {
@@ -294,7 +331,8 @@ void ThreadLocalStore::initializeAcquiredDB(u32 depc, ocrEdtDep_t* depv) {
 void ThreadLocalStore::insertDB(ocrGuid_t& guid) {
     DBPage* dbPage = dbMap[guid.guid];
     u64 offset;
-    searchDB(dbPage->startAddress, NULL, &offset);
+    bool isReallocated = searchDB(dbPage->startAddress, NULL, &offset);
+    assert(!isReallocated);
     acquiredDB.insert(acquiredDB.begin() + offset, dbPage);
 }
 
@@ -304,8 +342,37 @@ DBPage* ThreadLocalStore::getDB(uintptr_t addr) {
     return dbPage;
 }
 
+bool CacheKeyComparator::operator()(const CacheKey& key1,
+                                    const CacheKey& key2) const {
+    return (key1.srcGuid < key2.srcGuid ||
+            (key1.srcGuid == key2.srcGuid && key1.destGuid < key2.destGuid))
+               ? true
+               : false;
+}
+
+CacheRecord::CacheRecord(u16 srcEpoch, bool isReachable): srcEpoch(srcEpoch), isReachable(isReachable) {
+    
+}
+
+inline void Cache::insertRecord(CacheKey& key, u16 epoch, bool result) {
+    history[key] = new CacheRecord(epoch, result);
+}
+
+inline SearchResult Cache::search(CacheKey& key) {
+    map<CacheKey, CacheRecord*>::iterator ci = history.find(key);
+    SearchResult result;
+    if (ci == history.end()) {
+        result.isContain = false;
+        result.record = NULL;
+    } else {
+        result.isContain = true;
+        result.record = ci->second;
+    }
+    return result;
+}
+
 int usage() {
-    cout << "This tool detects data race i OCR program" << endl;
+    cout << "This tool detects data race in OCR program" << endl;
     return -1;
 }
 
@@ -313,60 +380,69 @@ int usage() {
  * Whether n2 is reachable from n1
  */
 bool isReachable(NodeKey& n1, u16 epoch1, NodeKey& n2) {
-//    assert(computationGraph.find(n1) != computationGraph.end());
-//    assert(computationGraph.find(n2) != computationGraph.end());
-    cout << n1.guid << " -----> " << n2.guid << endl;
+    //    assert(computationGraph.find(n1) != computationGraph.end());
+    //    assert(computationGraph.find(n2) != computationGraph.end());
+    //    cout << n1.guid << " -----> " << n2.guid << endl;
     Node* node1 = computationGraph[n1];
     Node* node2 = computationGraph[n2];
-//    assert(node1->type == Node::EDT && node2->type == Node::EDT);
-    bool result = false;
-    set<Node*> accessedNodes;
-    list<Node*> queue;
+    CacheKey cacheKey = {n1.guid, n2.guid};
+    SearchResult searchResult = cache.search(cacheKey);
+    if (searchResult.isContain && searchResult.record->srcEpoch >= epoch1) {
+        return searchResult.record->isReachable;
+    } else {
+        //    assert(node1->type == Node::EDT && node2->type == Node::EDT);
+        bool result = false;
+        set<Node*> accessedNodes;
+        list<Node*> queue;
 
-    if (n1.guid == n2.guid) {
-        return true;
-    }
+        if (n1.guid == n2.guid) {
+            return true;
+        }
 
-    // add all spawn edge and continue edge
-    EDTNode* edtNode1 = static_cast<EDTNode*>(node1);
-    for (u16 i = epoch1; i < edtNode1->spawnEdges.size(); i++) {
-        queue.push_back(edtNode1->spawnEdges[i]);
-    }
+        // add all spawn edge and continue edge
+        EDTNode* edtNode1 = static_cast<EDTNode*>(node1);
+        for (u16 i = epoch1; i < edtNode1->spawnEdges.size(); i++) {
+            queue.push_back(edtNode1->spawnEdges[i]);
+        }
 
-    for (list<Node *>::iterator di = edtNode1->children.begin(),
-                                de = edtNode1->children.end();
-         di != de; di++) {
-        queue.push_back(*di);
-    }
+        for (list<Node *>::iterator di = edtNode1->children.begin(),
+                                    de = edtNode1->children.end();
+             di != de; di++) {
+            queue.push_back(*di);
+        }
 
-    while (!queue.empty()) {
-        Node* current = queue.front();
-        queue.pop_front();
-        accessedNodes.insert(current);
-        if (current == node2) {
-            result = true;
-            break;
-        } else if (current->Node::EDT) {
-            EDTNode* currentEdt = static_cast<EDTNode*>(current);
-            for (vector<Node *>::iterator si = currentEdt->spawnEdges.begin(),
-                                          se = currentEdt->spawnEdges.end();
-                 si != se; si++) {
-                Node* spawnedNode = *si;
-                if (accessedNodes.find(spawnedNode) == accessedNodes.end()) {
-                    queue.push_back(spawnedNode);
+        while (!queue.empty()) {
+            Node* current = queue.front();
+            queue.pop_front();
+            accessedNodes.insert(current);
+            if (current == node2) {
+                result = true;
+                break;
+            } else if (current->Node::EDT) {
+                EDTNode* currentEdt = static_cast<EDTNode*>(current);
+                for (vector<Node *>::iterator
+                         si = currentEdt->spawnEdges.begin(),
+                         se = currentEdt->spawnEdges.end();
+                     si != se; si++) {
+                    Node* spawnedNode = *si;
+                    if (accessedNodes.find(spawnedNode) ==
+                        accessedNodes.end()) {
+                        queue.push_back(spawnedNode);
+                    }
+                }
+            }
+            for (list<Node *>::iterator di = current->children.begin(),
+                                        de = current->children.end();
+                 di != de; di++) {
+                Node* node = *di;
+                if (accessedNodes.find(node) == accessedNodes.end()) {
+                    queue.push_back(node);
                 }
             }
         }
-        for (list<Node *>::iterator di = current->children.begin(),
-                                    de = current->children.end();
-             di != de; di++) {
-            Node* node = *di;
-            if (accessedNodes.find(node) == accessedNodes.end()) {
-                queue.push_back(node);
-            }
-        }
+        cache.insertRecord(cacheKey, epoch1, result);
+        return result;
     }
-    return result;
 }
 
 bool isSkippedLibrary(IMG img) {
@@ -450,11 +526,12 @@ void afterEdtCreate(ocrGuid_t guid, ocrGuid_t templateGuid, u32 paramc,
     }
     EDTNode* newEdtNode = new EDTNode(guid.guid);
     NodeKey edtKey = {guid.guid};
-//    assert(computationGraph.find(edtKey) == computationGraph.end());
+    //    assert(computationGraph.find(edtKey) == computationGraph.end());
     computationGraph[edtKey] = newEdtNode;
     if (!isNullGuid(outputEvent)) {
         NodeKey eventKey = {outputEvent.guid};
-//        assert(computationGraph.find(eventKey) != computationGraph.end());
+        //        assert(computationGraph.find(eventKey) !=
+        //        computationGraph.end());
         newEdtNode->addChild(computationGraph[eventKey]);
     }
 
@@ -477,7 +554,7 @@ void afterDbCreate(ocrGuid_t guid, void* addr, u64 len, u16 flags,
     DBNode* newDbNode = new DBNode(guid.guid, flags);
     DBPage* dbPage = new DBPage((uintptr_t)addr, len);
     NodeKey dbKey = {guid.guid};
-//    assert(computationGraph.find(dbKey) == computationGraph.end());
+    //    assert(computationGraph.find(dbKey) == computationGraph.end());
     computationGraph[dbKey] = newDbNode;
     dbMap[guid.guid] = dbPage;
 
@@ -495,7 +572,7 @@ void afterEventCreate(ocrGuid_t guid, ocrEventTypes_t eventType,
 #endif
     EventNode* newEventNode = new EventNode(guid.guid);
     NodeKey eventKey = {guid.guid};
-//    assert(computationGraph.find(eventKey) == computationGraph.end());
+    //    assert(computationGraph.find(eventKey) == computationGraph.end());
     computationGraph[eventKey] = newEventNode;
 #if DEBUG
     cout << "afterEventCreate finish" << endl;
@@ -507,11 +584,12 @@ void afterAddDependence(ocrGuid_t source, ocrGuid_t destination, u32 slot,
 #if DEBUG
     cout << "afterAddDependence" << endl;
 #endif
-//    cout << source.guid << "->" << destination.guid << endl;
+    //    cout << source.guid << "->" << destination.guid << endl;
     NodeKey srcKey = {source.guid};
     NodeKey dstKey = {destination.guid};
-//    assert(isNullGuid(source) || computationGraph.find(srcKey) != computationGraph.end());
-//    assert(computationGraph.find(dstKey) != computationGraph.end());
+    //    assert(isNullGuid(source) || computationGraph.find(srcKey) !=
+    //    computationGraph.end());
+    //    assert(computationGraph.find(dstKey) != computationGraph.end());
 
     if (!isNullGuid(source) && computationGraph[srcKey]->type != Node::DB) {
         computationGraph[srcKey]->addChild(computationGraph[dstKey]);
@@ -529,8 +607,8 @@ void afterEventSatisfy(ocrGuid_t edtGuid, ocrGuid_t eventGuid,
     // According to spec, event satisfied after EDT terminates.
     NodeKey eventKey = {eventGuid.guid};
     NodeKey edtKey = {edtGuid.guid};
-//    assert(computationGraph.find(eventKey) != computationGraph.end());
-//    assert(computationGraph.find(edtKey) != computationGraph.end());
+    //    assert(computationGraph.find(eventKey) != computationGraph.end());
+    //    assert(computationGraph.find(edtKey) != computationGraph.end());
 
     Node* edt = computationGraph[edtKey];
     Node* event = computationGraph[eventKey];
@@ -824,14 +902,14 @@ void outputRaceInfo(ADDRINT ip1, bool ip1IsRead, ADDRINT ip2, bool ip2IsRead) {
     PIN_GetSourceLocation(ip1, &ip1Column, &ip1Line, &ip1File);
     PIN_GetSourceLocation(ip2, &ip2Column, &ip2Line, &ip2File);
     PIN_UnlockClient();
-//    if (!ip1File.empty() && !ip2File.empty()) {
+    //    if (!ip1File.empty() && !ip2File.empty()) {
     cout << ip1Type << "-" << ip2Type << " race detect!" << endl;
     cout << "first op is " << ip1 << " in " << ip1File << ": " << ip1Line
          << ": " << ip1Column << endl;
     cout << "second op is " << ip2 << " in " << ip2File << ": " << ip2Line
          << ": " << ip2Column << endl;
     abort();
-//    }
+    //    }
 }
 
 void checkDataRace(ADDRINT ip, NodeKey& nodeKey, bool isRead,
@@ -853,8 +931,9 @@ void checkDataRace(ADDRINT ip, NodeKey& nodeKey, bool isRead,
             }
         }
         if (bytePage->hasRead()) {
-            for (map<NodeKey, AccessRecord *>::iterator ai = bytePage->read.begin(),
-                                                ae = bytePage->read.end();
+            for (map<NodeKey, AccessRecord *>::iterator
+                     ai = bytePage->read.begin(),
+                     ae = bytePage->read.end();
                  ai != ae; ai++) {
                 AccessRecord* ar = ai->second;
                 bool mhp = !isReachable(ar->edtKey, ar->epoch, nodeKey);
