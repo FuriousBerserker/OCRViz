@@ -13,7 +13,7 @@
 #include "pin.H"
 #include "viz-util.hpp"
 
-#define DEBUG 1
+#define DEBUG 0
 #define OUTPUT_CG 0
 
 #define START_EPOCH 0
@@ -112,6 +112,7 @@ class ThreadLocalStore {
     void initializeAcquiredDB(u32 dpec, ocrEdtDep_t* depv);
     void insertDB(ocrGuid_t& guid);
     DBPage* getDB(uintptr_t addr);
+    void removeDB(DBPage* dbPage);
 
    private:
     bool searchDB(uintptr_t addr, DBPage** ptr, u64* offset);
@@ -299,6 +300,9 @@ bool ThreadLocalStore::searchDB(uintptr_t addr, DBPage** ptr, u64* offset) {
             if (ptr) {
                 *ptr = acquiredDB[middle];
             }
+            if (offset) {
+                *offset = middle;
+            }
 #if DEBUG
             cout << "search DB finish, true\n";
 #endif
@@ -342,6 +346,14 @@ DBPage* ThreadLocalStore::getDB(uintptr_t addr) {
     return dbPage;
 }
 
+void ThreadLocalStore::removeDB(DBPage* dbPage) {
+   u64 offset;
+   bool isContain = searchDB(dbPage->startAddress, NULL, &offset);
+   if (isContain) {
+    acquiredDB.erase(acquiredDB.begin() + offset);
+    }
+}
+
 bool CacheKeyComparator::operator()(const CacheKey& key1,
                                     const CacheKey& key2) const {
     return (key1.srcGuid < key2.srcGuid ||
@@ -379,26 +391,28 @@ int usage() {
 /**
  * Whether n2 is reachable from n1
  */
-bool isReachable(NodeKey& n1, u16 epoch1, NodeKey& n2) {
+bool isReachable(NodeKey& n1, u16 epoch1, NodeKey& n2, uintptr_t addr, unsigned accessType) {
     //    assert(computationGraph.find(n1) != computationGraph.end());
     //    assert(computationGraph.find(n2) != computationGraph.end());
     //    cout << n1.guid << " -----> " << n2.guid << endl;
+    if (n1.guid == n2.guid) {
+        return true;
+    }
+
     Node* node1 = computationGraph[n1];
     Node* node2 = computationGraph[n2];
     CacheKey cacheKey = {n1.guid, n2.guid};
     SearchResult searchResult = cache.search(cacheKey);
     if (searchResult.isContain && searchResult.record->srcEpoch >= epoch1) {
+//        cout << n1.guid << "#" << epoch1 << "," << n2.guid << "," << "true" << "," << addr << "," << accessType << endl;
         return searchResult.record->isReachable;
     } else {
         //    assert(node1->type == Node::EDT && node2->type == Node::EDT);
+//        cout << n1.guid << "#" << epoch1 << "," << n2.guid << "," << "false" << "," << addr << "," << accessType << endl;
         bool result = false;
         set<Node*> accessedNodes;
         list<Node*> queue;
-
-        if (n1.guid == n2.guid) {
-            return true;
-        }
-
+ 
         // add all spawn edge and continue edge
         EDTNode* edtNode1 = static_cast<EDTNode*>(node1);
         for (u16 i = epoch1; i < edtNode1->spawnEdges.size(); i++) {
@@ -414,11 +428,12 @@ bool isReachable(NodeKey& n1, u16 epoch1, NodeKey& n2) {
         while (!queue.empty()) {
             Node* current = queue.front();
             queue.pop_front();
+//            cout << "id is " << current->id << endl;
             accessedNodes.insert(current);
             if (current == node2) {
                 result = true;
                 break;
-            } else if (current->Node::EDT) {
+            } else if (current->type == Node::EDT) {
                 EDTNode* currentEdt = static_cast<EDTNode*>(current);
                 for (vector<Node *>::iterator
                          si = currentEdt->spawnEdges.begin(),
@@ -584,7 +599,7 @@ void afterAddDependence(ocrGuid_t source, ocrGuid_t destination, u32 slot,
 #if DEBUG
     cout << "afterAddDependence" << endl;
 #endif
-    //    cout << source.guid << "->" << destination.guid << endl;
+//    cout << source.guid << "->" << destination.guid << endl;
     NodeKey srcKey = {source.guid};
     NodeKey dstKey = {destination.guid};
     //    assert(isNullGuid(source) || computationGraph.find(srcKey) !=
@@ -632,6 +647,22 @@ void preEdt(THREADID tid, ocrGuid_t edtGuid, u32 paramc, u64* paramv, u32 depc,
 //    }
 #if DEBUG
     cout << "preEdt finish" << endl;
+#endif
+}
+
+void afterDbDestroy(ocrGuid_t dbGuid) {
+#if DEBUG
+    cout << "afterDbDestroy" << endl;
+#endif
+    map<intptr_t, DBPage*>::iterator di = dbMap.find(dbGuid.guid);
+    if (di != dbMap.end()) {
+        DBPage* dbPage = di->second;
+        tls.removeDB(dbPage);
+        dbMap.erase(dbGuid.guid);
+        delete dbPage;
+    }
+#if DEBUG
+    cout << "afterDbDestroy finish" << endl;
 #endif
 }
 
@@ -880,10 +911,21 @@ void overload(IMG img, void* v) {
                 5, IARG_END);
             PROTO_Free(proto_notifyEdtStart);
         }
+
+        //replace notifyDBDestroy
+        rtn = RTN_FindByName(img, "notifyDbDestroy");
+        if (RTN_Valid(rtn)) {
+#if DEBUG
+            cout << "replace notifyDbDestroy" << endl;
+#endif
+            PROTO proto_notifyDbDestroy = PROTO_Allocate(PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyDbDestroy", PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_END());
+            RTN_ReplaceSignature(rtn, AFUNPTR(afterDbDestroy), IARG_PROTOTYPE, proto_notifyDbDestroy, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_END);
+            PROTO_Free(proto_notifyDbDestroy);
+        }
     }
 }
 
-void outputRaceInfo(ADDRINT ip1, bool ip1IsRead, ADDRINT ip2, bool ip2IsRead) {
+void outputRaceInfo(ADDRINT ip1, bool ip1IsRead, ADDRINT ip2, bool ip2IsRead, intptr_t guid1, intptr_t guid2, u16 epoch1) {
     int32_t ip1Line, ip1Column, ip2Line, ip2Column;
     string ip1File, ip2File;
     string ip1Type, ip2Type;
@@ -905,29 +947,33 @@ void outputRaceInfo(ADDRINT ip1, bool ip1IsRead, ADDRINT ip2, bool ip2IsRead) {
     //    if (!ip1File.empty() && !ip2File.empty()) {
     cout << ip1Type << "-" << ip2Type << " race detect!" << endl;
     cout << "first op is " << ip1 << " in " << ip1File << ": " << ip1Line
-         << ": " << ip1Column << endl;
+         << ": " << ip1Column << ", guid is " << guid1 << "#" << epoch1 << endl;
     cout << "second op is " << ip2 << " in " << ip2File << ": " << ip2Line
-         << ": " << ip2Column << endl;
+         << ": " << ip2Column << ", guid is " << guid2 << endl;
+#if OUTPUT_CG
+    CG2Dot();
+#endif
+
     abort();
     //    }
 }
 
 void checkDataRace(ADDRINT ip, NodeKey& nodeKey, bool isRead,
-                   BytePage* bytePage) {
+                   BytePage* bytePage, uintptr_t addr) {
     if (isRead) {
         if (bytePage->hasWrite()) {
             bool mhp = !isReachable(bytePage->write->edtKey,
-                                    bytePage->write->epoch, nodeKey);
+                                    bytePage->write->epoch, nodeKey, addr, 0);
             if (mhp) {
-                outputRaceInfo(bytePage->write->ip, false, ip, true);
+                outputRaceInfo(bytePage->write->ip, false, ip, true, bytePage->write->edtKey.guid, nodeKey.guid, bytePage->write->epoch);
             }
         }
     } else {
         if (bytePage->hasWrite()) {
             bool mhp = !isReachable(bytePage->write->edtKey,
-                                    bytePage->write->epoch, nodeKey);
+                                    bytePage->write->epoch, nodeKey, addr, 1);
             if (mhp) {
-                outputRaceInfo(bytePage->write->ip, false, ip, false);
+                outputRaceInfo(bytePage->write->ip, false, ip, false, bytePage->write->edtKey.guid, nodeKey.guid, bytePage->write->epoch);
             }
         }
         if (bytePage->hasRead()) {
@@ -936,9 +982,9 @@ void checkDataRace(ADDRINT ip, NodeKey& nodeKey, bool isRead,
                      ae = bytePage->read.end();
                  ai != ae; ai++) {
                 AccessRecord* ar = ai->second;
-                bool mhp = !isReachable(ar->edtKey, ar->epoch, nodeKey);
+                bool mhp = !isReachable(ar->edtKey, ar->epoch, nodeKey, addr, 2);
                 if (mhp) {
-                    outputRaceInfo(ar->ip, true, ip, false);
+                    outputRaceInfo(ar->ip, true, ip, false, ar->edtKey.guid, nodeKey.guid, ar->epoch);
                 }
             }
         }
@@ -956,7 +1002,7 @@ void recordMemRead(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
             for (uint32_t i = 0; i < size; i++) {
                 BytePage* current = dbPage->getBytePage((uintptr_t)addr + i);
                 if (current) {
-                    checkDataRace(ip, edtKey, true, current);
+                    checkDataRace(ip, edtKey, true, current, (uintptr_t)addr + i);
                 }
             }
             AccessRecord* ar = new AccessRecord(edtKey, tls.epoch, ip);
@@ -979,7 +1025,7 @@ void recordMemWrite(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
             for (uint32_t i = 0; i < size; i++) {
                 BytePage* current = dbPage->getBytePage((uintptr_t)addr + i);
                 if (current) {
-                    checkDataRace(ip, edtKey, false, current);
+                    checkDataRace(ip, edtKey, false, current, (uintptr_t)addr + i);
                 }
             }
             AccessRecord* ar = new AccessRecord(edtKey, tls.epoch, ip);
@@ -1074,7 +1120,14 @@ int main(int argc, char* argv[]) {
     if (PIN_Init(argc, argv)) {
         return usage();
     }
-    userCodeImg = argv[argc - 1];
+    int argi;
+    for (argi = 0; argi< argc; argi++) {
+        string arg = argv[argi];
+        if (arg == "--") {
+            break;
+        }
+    }
+    userCodeImg = argv[argi + 1];
     cout << "User image is " << userCodeImg << endl;
     IMG_AddInstrumentFunction(overload, 0);
     IMG_AddInstrumentFunction(instrumentImage, 0);
