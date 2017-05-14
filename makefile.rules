@@ -72,10 +72,10 @@ LIB_ROOTS :=
 # This section contains the build rules for all binaries that have special build rules.
 # See makefile.default.rules for the default build rules.
 
-VIZFLAGS := -I ./inc -g
+PINTOOL_FLAGS = -I ./inc -g $(MACRO_FLAGS)
 # Build the intermediate object file.
 $(OBJDIR)OCRViz$(OBJ_SUFFIX): OCRViz.cpp
-	$(CXX) $(TOOL_CXXFLAGS_NOOPT) $(VIZFLAGS) $(COMP_OBJ)$@ $<
+	$(CXX) $(TOOL_CXXFLAGS_NOOPT) $(PINTOOL_FLAGS) $(COMP_OBJ)$@ $<
 
 # Build the tool as a dll (shared object).
 $(OBJDIR)OCRViz$(PINTOOL_SUFFIX): $(OBJDIR)OCRViz$(OBJ_SUFFIX)

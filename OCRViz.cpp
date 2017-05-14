@@ -9,13 +9,16 @@
 #include <map>
 #include <set>
 #include <string>
+#include <ctime>
 #include "ocr-types.h"
 #include "pin.H"
 #include "viz-util.hpp"
 
-#define DEBUG 0
-#define OUTPUT_CG 0
-
+//#define DEBUG 0
+//#define OUTPUT_CG 0
+//#define INSTRUMENT 1
+//#define DETECT_RACE 1
+//#define MEASURE_TIME 1
 #define START_EPOCH 0
 using namespace ::std;
 
@@ -150,6 +153,9 @@ class Cache {
    private:
     map<CacheKey, CacheRecord*, CacheKeyComparator> history;
 };
+
+// measure time
+clock_t program_start, program_end;
 
 // CG
 map<NodeKey, Node*, NodeKeyComparator> computationGraph;
@@ -744,13 +750,20 @@ void CG2Dot() {
     out.close();
 }
 
-void fini() {
+void fini(int32_t code, void* v) {
 #if DEBUG
     cout << "fini" << endl;
 #endif
 
 #if OUTPUT_CG
     CG2Dot();
+#endif
+
+#if MEASURE_TIME
+    program_end = clock();
+    double time_span = program_end - program_start; 
+    time_span /= CLOCKS_PER_SEC;
+    cout << "elapsed time: " << time_span << " seconds" << endl;
 #endif
 }
 
@@ -878,18 +891,18 @@ void overload(IMG img, void* v) {
         }
 
         // replace notifyShutdown
-        rtn = RTN_FindByName(img, "notifyShutdown");
-        if (RTN_Valid(rtn)) {
-#if DEBUG
-            cout << "replace notifyShutdown" << endl;
-#endif
-            PROTO proto_notifyShutdown =
-                PROTO_Allocate(PIN_PARG(void), CALLINGSTD_DEFAULT,
-                               "notifyShutdown", PIN_PARG_END());
-            RTN_ReplaceSignature(rtn, AFUNPTR(fini), IARG_PROTOTYPE,
-                                 proto_notifyShutdown, IARG_END);
-            PROTO_Free(proto_notifyShutdown);
-        }
+//        rtn = RTN_FindByName(img, "notifyShutdown");
+//        if (RTN_Valid(rtn)) {
+//#if DEBUG
+//            cout << "replace notifyShutdown" << endl;
+//#endif
+//            PROTO proto_notifyShutdown =
+//                PROTO_Allocate(PIN_PARG(void), CALLINGSTD_DEFAULT,
+//                               "notifyShutdown", PIN_PARG_END());
+//            RTN_ReplaceSignature(rtn, AFUNPTR(fini), IARG_PROTOTYPE,
+//                                 proto_notifyShutdown, IARG_END);
+//            PROTO_Free(proto_notifyShutdown);
+//        }
 
         // replace notifyEdtStart
         rtn = RTN_FindByName(img, "notifyEdtStart");
@@ -999,12 +1012,14 @@ void recordMemRead(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
         DBPage* dbPage = tls.getDB((uintptr_t)addr);
         NodeKey edtKey = {tls.currentEdt->id};
         if (dbPage) {
+#if DETECT_RACE
             for (uint32_t i = 0; i < size; i++) {
                 BytePage* current = dbPage->getBytePage((uintptr_t)addr + i);
                 if (current) {
                     checkDataRace(ip, edtKey, true, current, (uintptr_t)addr + i);
                 }
             }
+#endif
             AccessRecord* ar = new AccessRecord(edtKey, tls.epoch, ip);
             dbPage->updateBytePages(edtKey, ar, (uintptr_t)addr, size, true);
         }
@@ -1022,12 +1037,14 @@ void recordMemWrite(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
         DBPage* dbPage = tls.getDB((uintptr_t)addr);
         NodeKey edtKey = {tls.currentEdt->id};
         if (dbPage) {
+#if DETECT_RACE
             for (uint32_t i = 0; i < size; i++) {
                 BytePage* current = dbPage->getBytePage((uintptr_t)addr + i);
                 if (current) {
                     checkDataRace(ip, edtKey, false, current, (uintptr_t)addr + i);
                 }
             }
+#endif
             AccessRecord* ar = new AccessRecord(edtKey, tls.epoch, ip);
             dbPage->updateBytePages(edtKey, ar, (uintptr_t)addr, size, false);
         }
@@ -1116,6 +1133,10 @@ void init() {
 }
 
 int main(int argc, char* argv[]) {
+#if MEASURE_TIME
+    program_start = clock();
+#endif
+
     PIN_InitSymbols();
     if (PIN_Init(argc, argv)) {
         return usage();
@@ -1130,7 +1151,10 @@ int main(int argc, char* argv[]) {
     userCodeImg = argv[argi + 1];
     cout << "User image is " << userCodeImg << endl;
     IMG_AddInstrumentFunction(overload, 0);
+#if INSTRUMENT
     IMG_AddInstrumentFunction(instrumentImage, 0);
+#endif
+    PIN_AddFiniFunction(fini, 0);
     init();
     PIN_StartProgram();
     return 0;
