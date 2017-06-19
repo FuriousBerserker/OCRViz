@@ -3,21 +3,21 @@
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <iostream>
 #include <list>
 #include <map>
 #include <set>
 #include <string>
-#include <ctime>
 #include "ocr-types.h"
 #include "pin.H"
 #include "viz-util.hpp"
 
 //#define DEBUG 0
 //#define OUTPUT_CG 0
-//#define INSTRUMENT 1
-//#define DETECT_RACE 1
+#define INSTRUMENT 1
+#define DETECT_RACE 1
 //#define MEASURE_TIME 1
 #define START_EPOCH 0
 using namespace ::std;
@@ -50,7 +50,8 @@ class Node {
 class EDTNode : public Node {
    public:
     vector<Node*> spawnEdges;
-    EDTNode(intptr_t id);
+    EDTNode* parent;
+    EDTNode(intptr_t id, EDTNode* parent);
     virtual ~EDTNode();
     void addSpawnEdges(Node* node);
     Node* getSpawnEdge(u16 epoch);
@@ -127,12 +128,11 @@ struct CacheKey {
 };
 
 class CacheRecord {
-    public:
+   public:
     u16 srcEpoch;
-    bool isReachable;
 
-    public:
-    CacheRecord(u16 srcEpoch, bool isReachable);
+   public:
+    CacheRecord(u16 srcEpoch);
 };
 
 struct SearchResult {
@@ -147,7 +147,7 @@ class CacheKeyComparator {
 
 class Cache {
    public:
-    void insertRecord(CacheKey& key, u16 epoch, bool result);
+    void insertRecord(CacheKey& key, u16 epoch);
     SearchResult search(CacheKey& key);
 
    private:
@@ -198,7 +198,8 @@ Node::~Node() {}
 
 inline void Node::addChild(Node* node) { children.push_back(node); }
 
-EDTNode::EDTNode(intptr_t id) : Node(id, Node::EDT) {}
+EDTNode::EDTNode(intptr_t id, EDTNode* parent)
+    : Node(id, Node::EDT), parent(parent) {}
 
 EDTNode::~EDTNode() {}
 
@@ -353,10 +354,10 @@ DBPage* ThreadLocalStore::getDB(uintptr_t addr) {
 }
 
 void ThreadLocalStore::removeDB(DBPage* dbPage) {
-   u64 offset;
-   bool isContain = searchDB(dbPage->startAddress, NULL, &offset);
-   if (isContain) {
-    acquiredDB.erase(acquiredDB.begin() + offset);
+    u64 offset;
+    bool isContain = searchDB(dbPage->startAddress, NULL, &offset);
+    if (isContain) {
+        acquiredDB.erase(acquiredDB.begin() + offset);
     }
 }
 
@@ -368,12 +369,10 @@ bool CacheKeyComparator::operator()(const CacheKey& key1,
                : false;
 }
 
-CacheRecord::CacheRecord(u16 srcEpoch, bool isReachable): srcEpoch(srcEpoch), isReachable(isReachable) {
-    
-}
+CacheRecord::CacheRecord(u16 srcEpoch) : srcEpoch(srcEpoch) {}
 
-inline void Cache::insertRecord(CacheKey& key, u16 epoch, bool result) {
-    history[key] = new CacheRecord(epoch, result);
+inline void Cache::insertRecord(CacheKey& key, u16 epoch) {
+    history[key] = new CacheRecord(epoch);
 }
 
 inline SearchResult Cache::search(CacheKey& key) {
@@ -397,71 +396,105 @@ int usage() {
 /**
  * Whether n2 is reachable from n1
  */
-bool isReachable(NodeKey& n1, u16 epoch1, NodeKey& n2, uintptr_t addr, unsigned accessType) {
+bool isReachable(NodeKey& n1, u16 epoch1, NodeKey& n2, uintptr_t addr,
+                 unsigned accessType) {
     //    assert(computationGraph.find(n1) != computationGraph.end());
     //    assert(computationGraph.find(n2) != computationGraph.end());
     //    cout << n1.guid << " -----> " << n2.guid << endl;
+
+    // two nodes are identical
     if (n1.guid == n2.guid) {
         return true;
     }
 
     Node* node1 = computationGraph[n1];
     Node* node2 = computationGraph[n2];
+
+    // check cache
     CacheKey cacheKey = {n1.guid, n2.guid};
     SearchResult searchResult = cache.search(cacheKey);
     if (searchResult.isContain && searchResult.record->srcEpoch >= epoch1) {
-//        cout << n1.guid << "#" << epoch1 << "," << n2.guid << "," << "true" << "," << addr << "," << accessType << endl;
-        return searchResult.record->isReachable;
+        //        cout << n1.guid << "#" << epoch1 << "," << n2.guid << "," <<
+        //        "true" << "," << addr << "," << accessType << endl;
+        return true;
     } else {
         //    assert(node1->type == Node::EDT && node2->type == Node::EDT);
-//        cout << n1.guid << "#" << epoch1 << "," << n2.guid << "," << "false" << "," << addr << "," << accessType << endl;
+        //        cout << n1.guid << "#" << epoch1 << "," << n2.guid << "," <<
+        //        "false" << "," << addr << "," << accessType << endl;
         bool result = false;
-        set<Node*> accessedNodes;
-        list<Node*> queue;
- 
-        // add all spawn edge and continue edge
-        EDTNode* edtNode1 = static_cast<EDTNode*>(node1);
-        for (u16 i = epoch1; i < edtNode1->spawnEdges.size(); i++) {
-            queue.push_back(edtNode1->spawnEdges[i]);
-        }
 
-        for (list<Node *>::iterator di = edtNode1->children.begin(),
-                                    de = edtNode1->children.end();
-             di != de; di++) {
-            queue.push_back(*di);
-        }
-
-        while (!queue.empty()) {
-            Node* current = queue.front();
-            queue.pop_front();
-//            cout << "id is " << current->id << endl;
-            accessedNodes.insert(current);
-            if (current == node2) {
-                result = true;
-                break;
-            } else if (current->type == Node::EDT) {
-                EDTNode* currentEdt = static_cast<EDTNode*>(current);
-                for (vector<Node *>::iterator
-                         si = currentEdt->spawnEdges.begin(),
-                         se = currentEdt->spawnEdges.end();
-                     si != se; si++) {
-                    Node* spawnedNode = *si;
-                    if (accessedNodes.find(spawnedNode) ==
-                        accessedNodes.end()) {
-                        queue.push_back(spawnedNode);
+        // tree traversal to check spawn relationship
+        EDTNode* descendant = static_cast<EDTNode*>(node2);
+        EDTNode* ancestor = static_cast<EDTNode*>(node1);
+        bool requireGraphTravesal = true;
+        do {
+            if (descendant->parent == ancestor) {
+                for (u16 i = 0; i <= epoch1; i++) {
+                    if (ancestor->spawnEdges[i] == descendant) {
+                        result = true;
+                        requireGraphTravesal = false;
+                        break;
                     }
                 }
             }
-            for (list<Node *>::iterator di = current->children.begin(),
-                                        de = current->children.end();
+            descendant = descendant->parent;
+        } while (!result && descendant);
+
+        //graph traversal to check happens-before relationship
+        if (requireGraphTravesal) {
+            set<Node*> accessedNodes;
+            list<Node*> queue;
+
+            // add all spawn edge and continue edge
+            EDTNode* edtNode1 = static_cast<EDTNode*>(node1);
+            for (u16 i = epoch1; i < edtNode1->spawnEdges.size(); i++) {
+                queue.push_back(edtNode1->spawnEdges[i]);
+            }
+
+            for (list<Node *>::iterator di = edtNode1->children.begin(),
+                                        de = edtNode1->children.end();
                  di != de; di++) {
-                Node* node = *di;
-                if (accessedNodes.find(node) == accessedNodes.end()) {
-                    queue.push_back(node);
+                queue.push_back(*di);
+            }
+
+            while (!queue.empty()) {
+                Node* current = queue.front();
+                queue.pop_front();
+                //            cout << "id is " << current->id << endl;
+                accessedNodes.insert(current);
+                if (current == node2) {
+                    result = true;
+                    break;
+                } else if (current->type == Node::EDT) {
+                    EDTNode* currentEdt = static_cast<EDTNode*>(current);
+                    for (vector<Node *>::iterator
+                             si = currentEdt->spawnEdges.begin(),
+                             se = currentEdt->spawnEdges.end();
+                         si != se; si++) {
+                        Node* spawnedNode = *si;
+                        if (accessedNodes.find(spawnedNode) ==
+                            accessedNodes.end()) {
+                            queue.push_front(spawnedNode);
+                        }
+                    }
+                }
+                for (list<Node *>::iterator di = current->children.begin(),
+                                            de = current->children.end();
+                     di != de; di++) {
+                    Node* node = *di;
+                    if (accessedNodes.find(node) == accessedNodes.end()) {
+                        queue.push_front(node);
+                    }
                 }
             }
         }
-        cache.insertRecord(cacheKey, epoch1, result);
+        if (result) {
+            if (searchResult.isContain) {
+                searchResult.record->srcEpoch = epoch1;
+            } else {
+                cache.insertRecord(cacheKey, epoch1);
+            }
+        }
         return result;
     }
 }
@@ -545,7 +578,8 @@ void afterEdtCreate(ocrGuid_t guid, ocrGuid_t templateGuid, u32 paramc,
         cerr << "error" << endl;
         exit(0);
     }
-    EDTNode* newEdtNode = new EDTNode(guid.guid);
+    EDTNode* newEdtNode =
+        new EDTNode(guid.guid, isNullGuid(parent) ? NULL : tls.currentEdt);
     NodeKey edtKey = {guid.guid};
     //    assert(computationGraph.find(edtKey) == computationGraph.end());
     computationGraph[edtKey] = newEdtNode;
@@ -605,7 +639,7 @@ void afterAddDependence(ocrGuid_t source, ocrGuid_t destination, u32 slot,
 #if DEBUG
     cout << "afterAddDependence" << endl;
 #endif
-//    cout << source.guid << "->" << destination.guid << endl;
+    //    cout << source.guid << "->" << destination.guid << endl;
     NodeKey srcKey = {source.guid};
     NodeKey dstKey = {destination.guid};
     //    assert(isNullGuid(source) || computationGraph.find(srcKey) !=
@@ -761,7 +795,7 @@ void fini(int32_t code, void* v) {
 
 #if MEASURE_TIME
     program_end = clock();
-    double time_span = program_end - program_start; 
+    double time_span = program_end - program_start;
     time_span /= CLOCKS_PER_SEC;
     cout << "elapsed time: " << time_span << " seconds" << endl;
 #endif
@@ -891,18 +925,18 @@ void overload(IMG img, void* v) {
         }
 
         // replace notifyShutdown
-//        rtn = RTN_FindByName(img, "notifyShutdown");
-//        if (RTN_Valid(rtn)) {
-//#if DEBUG
-//            cout << "replace notifyShutdown" << endl;
-//#endif
-//            PROTO proto_notifyShutdown =
-//                PROTO_Allocate(PIN_PARG(void), CALLINGSTD_DEFAULT,
-//                               "notifyShutdown", PIN_PARG_END());
-//            RTN_ReplaceSignature(rtn, AFUNPTR(fini), IARG_PROTOTYPE,
-//                                 proto_notifyShutdown, IARG_END);
-//            PROTO_Free(proto_notifyShutdown);
-//        }
+        //        rtn = RTN_FindByName(img, "notifyShutdown");
+        //        if (RTN_Valid(rtn)) {
+        //#if DEBUG
+        //            cout << "replace notifyShutdown" << endl;
+        //#endif
+        //            PROTO proto_notifyShutdown =
+        //                PROTO_Allocate(PIN_PARG(void), CALLINGSTD_DEFAULT,
+        //                               "notifyShutdown", PIN_PARG_END());
+        //            RTN_ReplaceSignature(rtn, AFUNPTR(fini), IARG_PROTOTYPE,
+        //                                 proto_notifyShutdown, IARG_END);
+        //            PROTO_Free(proto_notifyShutdown);
+        //        }
 
         // replace notifyEdtStart
         rtn = RTN_FindByName(img, "notifyEdtStart");
@@ -925,20 +959,25 @@ void overload(IMG img, void* v) {
             PROTO_Free(proto_notifyEdtStart);
         }
 
-        //replace notifyDBDestroy
+        // replace notifyDBDestroy
         rtn = RTN_FindByName(img, "notifyDbDestroy");
         if (RTN_Valid(rtn)) {
 #if DEBUG
             cout << "replace notifyDbDestroy" << endl;
 #endif
-            PROTO proto_notifyDbDestroy = PROTO_Allocate(PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyDbDestroy", PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_END());
-            RTN_ReplaceSignature(rtn, AFUNPTR(afterDbDestroy), IARG_PROTOTYPE, proto_notifyDbDestroy, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_END);
+            PROTO proto_notifyDbDestroy = PROTO_Allocate(
+                PIN_PARG(void), CALLINGSTD_DEFAULT, "notifyDbDestroy",
+                PIN_PARG_AGGREGATE(ocrGuid_t), PIN_PARG_END());
+            RTN_ReplaceSignature(rtn, AFUNPTR(afterDbDestroy), IARG_PROTOTYPE,
+                                 proto_notifyDbDestroy,
+                                 IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_END);
             PROTO_Free(proto_notifyDbDestroy);
         }
     }
 }
 
-void outputRaceInfo(ADDRINT ip1, bool ip1IsRead, ADDRINT ip2, bool ip2IsRead, intptr_t guid1, intptr_t guid2, u16 epoch1) {
+void outputRaceInfo(ADDRINT ip1, bool ip1IsRead, ADDRINT ip2, bool ip2IsRead,
+                    intptr_t guid1, intptr_t guid2, u16 epoch1) {
     int32_t ip1Line, ip1Column, ip2Line, ip2Column;
     string ip1File, ip2File;
     string ip1Type, ip2Type;
@@ -978,7 +1017,9 @@ void checkDataRace(ADDRINT ip, NodeKey& nodeKey, bool isRead,
             bool mhp = !isReachable(bytePage->write->edtKey,
                                     bytePage->write->epoch, nodeKey, addr, 0);
             if (mhp) {
-                outputRaceInfo(bytePage->write->ip, false, ip, true, bytePage->write->edtKey.guid, nodeKey.guid, bytePage->write->epoch);
+                outputRaceInfo(bytePage->write->ip, false, ip, true,
+                               bytePage->write->edtKey.guid, nodeKey.guid,
+                               bytePage->write->epoch);
             }
         }
     } else {
@@ -986,7 +1027,9 @@ void checkDataRace(ADDRINT ip, NodeKey& nodeKey, bool isRead,
             bool mhp = !isReachable(bytePage->write->edtKey,
                                     bytePage->write->epoch, nodeKey, addr, 1);
             if (mhp) {
-                outputRaceInfo(bytePage->write->ip, false, ip, false, bytePage->write->edtKey.guid, nodeKey.guid, bytePage->write->epoch);
+                outputRaceInfo(bytePage->write->ip, false, ip, false,
+                               bytePage->write->edtKey.guid, nodeKey.guid,
+                               bytePage->write->epoch);
             }
         }
         if (bytePage->hasRead()) {
@@ -995,9 +1038,11 @@ void checkDataRace(ADDRINT ip, NodeKey& nodeKey, bool isRead,
                      ae = bytePage->read.end();
                  ai != ae; ai++) {
                 AccessRecord* ar = ai->second;
-                bool mhp = !isReachable(ar->edtKey, ar->epoch, nodeKey, addr, 2);
+                bool mhp =
+                    !isReachable(ar->edtKey, ar->epoch, nodeKey, addr, 2);
                 if (mhp) {
-                    outputRaceInfo(ar->ip, true, ip, false, ar->edtKey.guid, nodeKey.guid, ar->epoch);
+                    outputRaceInfo(ar->ip, true, ip, false, ar->edtKey.guid,
+                                   nodeKey.guid, ar->epoch);
                 }
             }
         }
@@ -1016,7 +1061,8 @@ void recordMemRead(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
             for (uint32_t i = 0; i < size; i++) {
                 BytePage* current = dbPage->getBytePage((uintptr_t)addr + i);
                 if (current) {
-                    checkDataRace(ip, edtKey, true, current, (uintptr_t)addr + i);
+                    checkDataRace(ip, edtKey, true, current,
+                                  (uintptr_t)addr + i);
                 }
             }
 #endif
@@ -1041,7 +1087,8 @@ void recordMemWrite(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
             for (uint32_t i = 0; i < size; i++) {
                 BytePage* current = dbPage->getBytePage((uintptr_t)addr + i);
                 if (current) {
-                    checkDataRace(ip, edtKey, false, current, (uintptr_t)addr + i);
+                    checkDataRace(ip, edtKey, false, current,
+                                  (uintptr_t)addr + i);
                 }
             }
 #endif
@@ -1142,7 +1189,7 @@ int main(int argc, char* argv[]) {
         return usage();
     }
     int argi;
-    for (argi = 0; argi< argc; argi++) {
+    for (argi = 0; argi < argc; argi++) {
         string arg = argv[argi];
         if (arg == "--") {
             break;
