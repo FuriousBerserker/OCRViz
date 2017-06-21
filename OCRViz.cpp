@@ -18,7 +18,7 @@
 //#define OUTPUT_CG 0
 #define INSTRUMENT 1
 #define DETECT_RACE 1
-//#define MEASURE_TIME 1
+#define MEASURE_TIME 1
 #define START_EPOCH 0
 using namespace ::std;
 
@@ -429,7 +429,7 @@ bool isReachable(NodeKey& n1, u16 epoch1, NodeKey& n2, uintptr_t addr,
         bool requireGraphTravesal = true;
         do {
             if (descendant->parent == ancestor) {
-                for (u16 i = 0; i <= epoch1; i++) {
+                for (u16 i = epoch1; i < ancestor->spawnEdges.size(); i++) {
                     if (ancestor->spawnEdges[i] == descendant) {
                         result = true;
                         requireGraphTravesal = false;
