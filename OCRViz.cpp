@@ -14,7 +14,7 @@
 #include "pin.H"
 #include "viz-util.hpp"
 
-//#define DEBUG 0
+//#define DEBUG 1
 //#define OUTPUT_CG 0
 //#define INSTRUMENT 1
 //#define DETECT_RACE 1
@@ -39,22 +39,23 @@ class Node {
 
    public:
     intptr_t id;
-    list<Node*> children;
+    list<Node*> incomingEdges;
     Type type;
 
     Node(intptr_t id, Type type);
     virtual ~Node();
-    void addChild(Node* node);
+    void addDependence(Node* node);
 };
 
 class EDTNode : public Node {
    public:
-    vector<Node*> spawnEdges;
+    vector<EDTNode*> spawnEdges;
     EDTNode* parent;
     EDTNode(intptr_t id, EDTNode* parent);
     virtual ~EDTNode();
-    void addSpawnEdges(Node* node);
+    void addSpawnEdges(EDTNode* node);
     Node* getSpawnEdge(u16 epoch);
+    u16 getEpoch();
 };
 
 class DBNode : public Node {
@@ -91,6 +92,7 @@ class BytePage {
    public:
     AccessRecord* write;
     map<NodeKey, AccessRecord*, NodeKeyComparator> read;
+    BytePage();
     bool hasWrite();
     bool hasRead();
     void update(NodeKey key, AccessRecord* ar, bool isRead);
@@ -196,18 +198,22 @@ Node::Node(intptr_t id, Node::Type type) : id(id), type(type) {}
 
 Node::~Node() {}
 
-inline void Node::addChild(Node* node) { children.push_back(node); }
+inline void Node::addDependence(Node* node) { incomingEdges.push_back(node); }
 
 EDTNode::EDTNode(intptr_t id, EDTNode* parent)
     : Node(id, Node::EDT), parent(parent) {}
 
 EDTNode::~EDTNode() {}
 
-inline void EDTNode::addSpawnEdges(Node* node) { spawnEdges.push_back(node); }
+inline void EDTNode::addSpawnEdges(EDTNode* node) { spawnEdges.push_back(node); }
 
 inline Node* EDTNode::getSpawnEdge(u16 epoch) {
-    assert(spawnEdges.size() > epoch);
+//    assert(spawnEdges.size() > epoch);
     return spawnEdges[epoch];
+}
+
+inline u16 EDTNode::getEpoch() {
+    return spawnEdges.size();
 }
 
 DBNode::DBNode(intptr_t id, u16 accessMode)
@@ -229,6 +235,10 @@ AccessRecord::AccessRecord(NodeKey& nodeKey, u16 epoch, ADDRINT ip)
     this->edtKey.guid = nodeKey.guid;
 }
 
+BytePage::BytePage() : write(NULL) {
+
+}
+
 bool BytePage::hasWrite() {
     if (write) {
         return true;
@@ -247,8 +257,18 @@ bool BytePage::hasRead() {
 
 void BytePage::update(NodeKey key, AccessRecord* ar, bool isRead) {
     if (isRead) {
+//        map<NodeKey, AccessRecord*>::iterator ri = read.find(key);
+//        if (ri != read.end()) {
+//            delete ri->second;
+//            ri->second = ar;
+//        } else {
+//            read.insert(make_pair(key, ar));
+//        }
         read[key] = ar;
     } else {
+//        if (write) {
+//            delete write;
+//        }
         write = ar;
     }
 }
@@ -372,7 +392,12 @@ bool CacheKeyComparator::operator()(const CacheKey& key1,
 CacheRecord::CacheRecord(u16 srcEpoch) : srcEpoch(srcEpoch) {}
 
 inline void Cache::insertRecord(CacheKey& key, u16 epoch) {
-    history[key] = new CacheRecord(epoch);
+    map<CacheKey, CacheRecord*>::iterator ci = history.find(key);
+    if (ci == history.end()) {
+        history.insert(make_pair(key, new CacheRecord(epoch))); 
+    } else {
+        ci->second->srcEpoch = epoch;
+    }
 }
 
 inline SearchResult Cache::search(CacheKey& key) {
@@ -394,109 +419,157 @@ int usage() {
 }
 
 /**
- * Whether n2 is reachable from n1
+ * Output detail of a data race
  */
-bool isReachable(NodeKey& n1, u16 epoch1, NodeKey& n2, uintptr_t addr,
-                 unsigned accessType) {
-    //    assert(computationGraph.find(n1) != computationGraph.end());
-    //    assert(computationGraph.find(n2) != computationGraph.end());
-    //    cout << n1.guid << " -----> " << n2.guid << endl;
-
-    // two nodes are identical
-    if (n1.guid == n2.guid) {
-        return true;
+void outputRaceInfo(ADDRINT ip1, bool ip1IsRead, ADDRINT ip2, bool ip2IsRead,
+                    intptr_t guid1, intptr_t guid2, u16 epoch1, u16 epoch2) {
+    int32_t ip1Line, ip1Column, ip2Line, ip2Column;
+    string ip1File, ip2File;
+    string ip1Type, ip2Type;
+    if (ip1IsRead) {
+        ip1Type = "Read";
+    } else {
+        ip1Type = "Write";
+    }
+    if (ip2IsRead) {
+        ip2Type = "Read";
+    } else {
+        ip2Type = "Write";
     }
 
-    Node* node1 = computationGraph[n1];
-    Node* node2 = computationGraph[n2];
+    PIN_LockClient();
+    PIN_GetSourceLocation(ip1, &ip1Column, &ip1Line, &ip1File);
+    PIN_GetSourceLocation(ip2, &ip2Column, &ip2Line, &ip2File);
+    PIN_UnlockClient();
+    //    if (!ip1File.empty() && !ip2File.empty()) {
+    cout << ip1Type << "-" << ip2Type << " race detect!" << endl;
+    cout << "first op is " << ip1 << " in " << ip1File << ": " << ip1Line
+         << ": " << ip1Column << ", guid is " << guid1 << "#" << epoch1 << endl;
+    cout << "second op is " << ip2 << " in " << ip2File << ": " << ip2Line
+         << ": " << ip2Column << ", guid is " << guid2 << "#" << epoch2 << endl;
 
-    // check cache
-    CacheKey cacheKey = {n1.guid, n2.guid};
-    SearchResult searchResult = cache.search(cacheKey);
-    if (searchResult.isContain && searchResult.record->srcEpoch >= epoch1) {
-        //        cout << n1.guid << "#" << epoch1 << "," << n2.guid << "," <<
-        //        "true" << "," << addr << "," << accessType << endl;
-        return true;
-    } else {
-        //    assert(node1->type == Node::EDT && node2->type == Node::EDT);
-        //        cout << n1.guid << "#" << epoch1 << "," << n2.guid << "," <<
-        //        "false" << "," << addr << "," << accessType << endl;
-        bool result = false;
+    //    }
+}
 
-        // tree traversal to check spawn relationship
-        EDTNode* descendant = static_cast<EDTNode*>(node2);
-        EDTNode* ancestor = static_cast<EDTNode*>(node1);
-        bool requireGraphTravesal = true;
-        do {
-            if (descendant->parent == ancestor) {
-                for (u16 i = epoch1; i < ancestor->spawnEdges.size(); i++) {
-                    if (ancestor->spawnEdges[i] == descendant) {
-                        result = true;
-                        requireGraphTravesal = false;
-                        break;
-                    }
-                }
-            }
-            descendant = descendant->parent;
-        } while (!result && descendant);
+/**
+ * Whether dest is reachable from all nodes in srcs
+ */
+bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip, uintptr_t addr, bool isSrcRead, bool isDestRead) {
 
-        //graph traversal to check happens-before relationship
-        if (requireGraphTravesal) {
-            set<Node*> accessedNodes;
-            list<Node*> queue;
-
-            // add all spawn edge and continue edge
-            EDTNode* edtNode1 = static_cast<EDTNode*>(node1);
-            for (u16 i = epoch1; i < edtNode1->spawnEdges.size(); i++) {
-                queue.push_back(edtNode1->spawnEdges[i]);
-            }
-
-            for (list<Node *>::iterator di = edtNode1->children.begin(),
-                                        de = edtNode1->children.end();
-                 di != de; di++) {
-                queue.push_back(*di);
-            }
-
-            while (!queue.empty()) {
-                Node* current = queue.front();
-                queue.pop_front();
-                //            cout << "id is " << current->id << endl;
-                accessedNodes.insert(current);
-                if (current == node2) {
-                    result = true;
-                    break;
-                } else if (current->type == Node::EDT) {
-                    EDTNode* currentEdt = static_cast<EDTNode*>(current);
-                    for (vector<Node *>::iterator
-                             si = currentEdt->spawnEdges.begin(),
-                             se = currentEdt->spawnEdges.end();
-                         si != se; si++) {
-                        Node* spawnedNode = *si;
-                        if (accessedNodes.find(spawnedNode) ==
-                            accessedNodes.end()) {
-                            queue.push_front(spawnedNode);
+    map<Node*, u16> srcNodeMap; 
+    for (vector<AccessRecord*>::iterator si = srcs.begin(), se = srcs.end(); si != se; si++) {
+        AccessRecord* ar = *si;
+        if (ar->edtKey.guid == dest->id) {
+            continue;
+        } else {
+            //check cache
+            CacheKey cacheKey = {ar->edtKey.guid, dest->id};
+            SearchResult searchResult = cache.search(cacheKey);
+            if (searchResult.isContain && searchResult.record->srcEpoch >= ar->epoch) {
+                continue;
+            } else {
+                // check spawn relationship by tree traversal
+                EDTNode* src = static_cast<EDTNode*>(computationGraph[ar->edtKey]);
+                EDTNode* descendant = dest;
+                bool requireGraphTravesal = true;
+                do {
+                    if (descendant->parent == src) {
+                        for (u16 i = ar->epoch; i < src->spawnEdges.size(); i++) {
+                            if (src->spawnEdges[i] == descendant) {
+                                requireGraphTravesal = false;
+                                break;
+                            }
                         }
                     }
+                    descendant = descendant->parent;
+                } while (requireGraphTravesal && descendant);
+                
+                if (requireGraphTravesal) {
+                    srcNodeMap.insert(make_pair(src, ar->epoch));
+                } else {
+                    cache.insertRecord(cacheKey, ar->epoch);
                 }
-                for (list<Node *>::iterator di = current->children.begin(),
-                                            de = current->children.end();
-                     di != de; di++) {
-                    Node* node = *di;
-                    if (accessedNodes.find(node) == accessedNodes.end()) {
-                        queue.push_front(node);
+            }
+        }
+    }
+    
+    //check happens-before relationship by graph traversal
+    if (!srcNodeMap.empty()) {
+        set<Node*> accessedNodes;
+        list<Node*> queue;
+        queue.push_back(dest);
+        while (!queue.empty() && !srcNodeMap.empty()) {
+            Node* current = queue.front();
+            queue.pop_front();
+            //            cout << "id is " << current->id << endl;
+            if (accessedNodes.find(current) == accessedNodes.end()) {
+                accessedNodes.insert(current);
+            } else {
+                continue;
+            }
+            
+            //tackle dependence
+            for (list<Node*>::iterator li = current->incomingEdges.begin(), le = current->incomingEdges.end(); li != le; li++) {
+                Node* dependence = *li;
+                if (dependence->type == Node::EDT) {
+                    map<Node*, u16>::iterator si = srcNodeMap.find(dependence);
+                    if (si != srcNodeMap.end()) {
+                        srcNodeMap.erase(dependence);
+                        CacheKey key = {dependence->id, dest->id};
+                        cache.insertRecord(key, static_cast<EDTNode*>(dependence)->getEpoch());
                     }
                 }
+                queue.push_front(dependence);
+            }
+
+            //tackle parent
+            if (current->type == Node::EDT) {
+                EDTNode* currentEDT = static_cast<EDTNode*>(current);
+                if (currentEDT->parent) {
+                    map<Node*, u16>::iterator si = srcNodeMap.find(currentEDT->parent);
+                    if (si != srcNodeMap.end()) {
+                        for (u16 i = si->second; i < currentEDT->parent->getEpoch(); i++) {
+                            if (currentEDT == currentEDT->parent->spawnEdges[i]) {
+                                srcNodeMap.erase(currentEDT->parent);
+                                CacheKey key = {currentEDT->parent->id, dest->id};
+                                cache.insertRecord(key, i);
+                                break;
+                            }
+                        }
+                    }
+                    queue.push_front(currentEDT->parent);
+                }
             }
         }
-        if (result) {
-            if (searchResult.isContain) {
-                searchResult.record->srcEpoch = epoch1;
-            } else {
-                cache.insertRecord(cacheKey, epoch1);
-            }
-        }
-        return result;
     }
+    
+    if (srcNodeMap.empty()) {
+        return true;
+    } else {
+        
+        for (vector<AccessRecord*>::iterator si = srcs.begin(), se = srcs.end(); si != se; si++) {
+            AccessRecord* ar = *si;
+            EDTNode* srcNode = static_cast<EDTNode*>(computationGraph[ar->edtKey]);
+            if (srcNodeMap.find(srcNode) != srcNodeMap.end()) {
+                outputRaceInfo(ar->ip, isSrcRead, ip, isDestRead, srcNode->id, dest->id, srcNode->getEpoch(), dest->getEpoch()); 
+            }
+        }
+
+#if OUTPUT_CG
+        CG2Dot();
+#endif
+
+        abort();
+        return false;
+    }
+}
+
+/**
+ * Whether dest is reachable from src
+ */
+bool isReachable(AccessRecord* src, EDTNode* dest, ADDRINT ip, uintptr_t addr, bool isSrcRead, bool isDestRead) {
+    vector<AccessRecord*> srcs(1, src);
+    return isReachable(srcs, dest, ip, addr, isSrcRead, isDestRead);
 }
 
 bool isSkippedLibrary(IMG img) {
@@ -587,7 +660,7 @@ void afterEdtCreate(ocrGuid_t guid, ocrGuid_t templateGuid, u32 paramc,
         NodeKey eventKey = {outputEvent.guid};
         //        assert(computationGraph.find(eventKey) !=
         //        computationGraph.end());
-        newEdtNode->addChild(computationGraph[eventKey]);
+        computationGraph[eventKey]->addDependence(newEdtNode);
     }
 
     // add spawn edge & increase parent's epoch
@@ -647,7 +720,7 @@ void afterAddDependence(ocrGuid_t source, ocrGuid_t destination, u32 slot,
     //    assert(computationGraph.find(dstKey) != computationGraph.end());
 
     if (!isNullGuid(source) && computationGraph[srcKey]->type != Node::DB) {
-        computationGraph[srcKey]->addChild(computationGraph[dstKey]);
+        computationGraph[dstKey]->addDependence(computationGraph[srcKey]);
     }
 #if DEBUG
     cout << "afterAddDependence finish" << endl;
@@ -667,7 +740,7 @@ void afterEventSatisfy(ocrGuid_t edtGuid, ocrGuid_t eventGuid,
 
     Node* edt = computationGraph[edtKey];
     Node* event = computationGraph[eventKey];
-    edt->addChild(event);
+    event->addDependence(edt);
 #if DEBUG
     cout << "afterEventSatisfy finish" << endl;
 #endif
@@ -763,19 +836,28 @@ void CG2Dot() {
                            START_EPOCH, Node::SPAWN);
             }
 
-            for (list<Node *>::iterator ni = edtNode->children.begin(),
-                                        ne = edtNode->children.end();
+            for (list<Node *>::iterator ni = edtNode->incomingEdges.begin(),
+                                        ne = edtNode->incomingEdges.end();
                  ni != ne; ni++) {
-                Node* pointedNode = *ni;
-                outputLink(out, edtNode, edtNode->spawnEdges.size(),
-                           pointedNode, START_EPOCH, Node::JOIN);
+                Node* incomingNode = *ni;
+                u16 srcEpoch = START_EPOCH;
+                if (incomingNode->type == Node::EDT) {
+                    srcEpoch = static_cast<EDTNode*>(incomingNode)->getEpoch();
+                }
+                outputLink(out, incomingNode, srcEpoch,
+                           edtNode, START_EPOCH, Node::JOIN);
             }
         } else {
-            for (list<Node *>::iterator ni = node->children.begin(),
-                                        ne = node->children.end();
+            for (list<Node *>::iterator ni = node->incomingEdges.begin(),
+                                        ne = node->incomingEdges.end();
                  ni != ne; ni++) {
-                Node* pointedNode = *ni;
-                outputLink(out, node, START_EPOCH, pointedNode, START_EPOCH,
+                Node* incomingNode = *ni;
+                u16 srcEpoch = START_EPOCH;
+                if (incomingNode->type == Node::EDT) {
+                    srcEpoch = static_cast<EDTNode*>(incomingNode)->getEpoch();
+                }
+
+                outputLink(out, incomingNode, srcEpoch, node, START_EPOCH,
                            Node::JOIN);
             }
         }
@@ -976,75 +1058,46 @@ void overload(IMG img, void* v) {
     }
 }
 
-void outputRaceInfo(ADDRINT ip1, bool ip1IsRead, ADDRINT ip2, bool ip2IsRead,
-                    intptr_t guid1, intptr_t guid2, u16 epoch1) {
-    int32_t ip1Line, ip1Column, ip2Line, ip2Column;
-    string ip1File, ip2File;
-    string ip1Type, ip2Type;
-    if (ip1IsRead) {
-        ip1Type = "Read";
-    } else {
-        ip1Type = "Write";
-    }
-    if (ip2IsRead) {
-        ip2Type = "Read";
-    } else {
-        ip2Type = "Write";
-    }
-
-    PIN_LockClient();
-    PIN_GetSourceLocation(ip1, &ip1Column, &ip1Line, &ip1File);
-    PIN_GetSourceLocation(ip2, &ip2Column, &ip2Line, &ip2File);
-    PIN_UnlockClient();
-    //    if (!ip1File.empty() && !ip2File.empty()) {
-    cout << ip1Type << "-" << ip2Type << " race detect!" << endl;
-    cout << "first op is " << ip1 << " in " << ip1File << ": " << ip1Line
-         << ": " << ip1Column << ", guid is " << guid1 << "#" << epoch1 << endl;
-    cout << "second op is " << ip2 << " in " << ip2File << ": " << ip2Line
-         << ": " << ip2Column << ", guid is " << guid2 << endl;
-#if OUTPUT_CG
-    CG2Dot();
-#endif
-
-    abort();
-    //    }
-}
-
-void checkDataRace(ADDRINT ip, NodeKey& nodeKey, bool isRead,
+void checkDataRace(ADDRINT ip, EDTNode* current, bool isRead,
                    BytePage* bytePage, uintptr_t addr) {
     if (isRead) {
         if (bytePage->hasWrite()) {
-            bool mhp = !isReachable(bytePage->write->edtKey,
-                                    bytePage->write->epoch, nodeKey, addr, 0);
-            if (mhp) {
-                outputRaceInfo(bytePage->write->ip, false, ip, true,
-                               bytePage->write->edtKey.guid, nodeKey.guid,
-                               bytePage->write->epoch);
-            }
+            isReachable(bytePage->write, current, ip, addr, false, true);
+//            bool mhp = !isReachable(bytePage->write->edtKey,
+//                                    bytePage->write->epoch, nodeKey, addr, 0);
+//            if (mhp) {
+//                outputRaceInfo(bytePage->write->ip, false, ip, true,
+//                               bytePage->write->edtKey.guid, nodeKey.guid,
+//                               bytePage->write->epoch);
+//            }
         }
     } else {
         if (bytePage->hasWrite()) {
-            bool mhp = !isReachable(bytePage->write->edtKey,
-                                    bytePage->write->epoch, nodeKey, addr, 1);
-            if (mhp) {
-                outputRaceInfo(bytePage->write->ip, false, ip, false,
-                               bytePage->write->edtKey.guid, nodeKey.guid,
-                               bytePage->write->epoch);
-            }
+            isReachable(bytePage->write, current, ip, addr, false, false);
+//            bool mhp = !isReachable(bytePage->write->edtKey,
+//                                    bytePage->write->epoch, nodeKey, addr, 1);
+//            if (mhp) {
+//                outputRaceInfo(bytePage->write->ip, false, ip, false,
+//                               bytePage->write->edtKey.guid, nodeKey.guid,
+//                               bytePage->write->epoch);
+//            }
         }
         if (bytePage->hasRead()) {
+            vector<AccessRecord*> records;
+            records.reserve(bytePage->read.size());
             for (map<NodeKey, AccessRecord *>::iterator
                      ai = bytePage->read.begin(),
                      ae = bytePage->read.end();
                  ai != ae; ai++) {
-                AccessRecord* ar = ai->second;
-                bool mhp =
-                    !isReachable(ar->edtKey, ar->epoch, nodeKey, addr, 2);
-                if (mhp) {
-                    outputRaceInfo(ar->ip, true, ip, false, ar->edtKey.guid,
-                                   nodeKey.guid, ar->epoch);
-                }
+                records.push_back(ai->second);
+//                bool mhp =
+//                    !isReachable(ar->edtKey, ar->epoch, nodeKey, addr, 2);
+//                if (mhp) {
+//                    outputRaceInfo(ar->ip, true, ip, false, ar->edtKey.guid,
+//                                   nodeKey.guid, ar->epoch);
+//                }
             }
+            isReachable(records, current, ip, addr, true, false);
         }
     }
 }
@@ -1061,7 +1114,7 @@ void recordMemRead(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
             for (uint32_t i = 0; i < size; i++) {
                 BytePage* current = dbPage->getBytePage((uintptr_t)addr + i);
                 if (current) {
-                    checkDataRace(ip, edtKey, true, current,
+                    checkDataRace(ip, tls.currentEdt, true, current,
                                   (uintptr_t)addr + i);
                 }
             }
@@ -1087,7 +1140,7 @@ void recordMemWrite(void* addr, uint32_t size, ADDRINT sp, ADDRINT ip) {
             for (uint32_t i = 0; i < size; i++) {
                 BytePage* current = dbPage->getBytePage((uintptr_t)addr + i);
                 if (current) {
-                    checkDataRace(ip, edtKey, false, current,
+                    checkDataRace(ip, tls.currentEdt, false, current,
                                   (uintptr_t)addr + i);
                 }
             }
