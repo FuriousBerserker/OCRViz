@@ -16,9 +16,9 @@
 
 //#define DEBUG 0
 //#define OUTPUT_CG 0
-#define INSTRUMENT 1
-#define DETECT_RACE 1
-#define MEASURE_TIME 1
+//#define INSTRUMENT 1
+//#define DETECT_RACE 1
+//#define MEASURE_TIME 1
 #define START_EPOCH 0
 using namespace ::std;
 
@@ -225,7 +225,7 @@ bool NodeKeyComparator::operator()(const NodeKey& key1,
 }
 
 AccessRecord::AccessRecord(NodeKey& nodeKey, u16 epoch, ADDRINT ip)
-    : epoch(START_EPOCH), ip(ip) {
+    : epoch(epoch), ip(ip) {
     this->edtKey.guid = nodeKey.guid;
 }
 
