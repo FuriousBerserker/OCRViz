@@ -16,9 +16,9 @@
 
 //#define DEBUG 1
 //#define OUTPUT_CG 0
-//#define INSTRUMENT 1
-//#define DETECT_RACE 1
-//#define MEASURE_TIME 1
+#define INSTRUMENT 1
+#define DETECT_RACE 1
+#define MEASURE_TIME 1
 #define START_EPOCH 0
 using namespace ::std;
 
@@ -270,6 +270,7 @@ void BytePage::update(NodeKey key, AccessRecord* ar, bool isRead) {
 //            delete write;
 //        }
         write = ar;
+        read.clear();
     }
 }
 
@@ -472,11 +473,13 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip, uintptr
                 EDTNode* src = static_cast<EDTNode*>(computationGraph[ar->edtKey]);
                 EDTNode* descendant = dest;
                 bool requireGraphTravesal = true;
+                u16 spawnEpoch;
                 do {
                     if (descendant->parent == src) {
                         for (u16 i = ar->epoch; i < src->spawnEdges.size(); i++) {
                             if (src->spawnEdges[i] == descendant) {
                                 requireGraphTravesal = false;
+                                spawnEpoch = i;
                                 break;
                             }
                         }
@@ -487,7 +490,7 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip, uintptr
                 if (requireGraphTravesal) {
                     srcNodeMap.insert(make_pair(src, ar->epoch));
                 } else {
-                    cache.insertRecord(cacheKey, ar->epoch);
+                    cache.insertRecord(cacheKey, spawnEpoch);
                 }
             }
         }
@@ -517,9 +520,10 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip, uintptr
                         srcNodeMap.erase(dependence);
                         CacheKey key = {dependence->id, dest->id};
                         cache.insertRecord(key, static_cast<EDTNode*>(dependence)->getEpoch());
+                        dest->addDependence(dependence);
                     }
                 }
-                queue.push_front(dependence);
+                queue.push_back(dependence);
             }
 
             //tackle parent
@@ -537,12 +541,12 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip, uintptr
                             }
                         }
                     }
-                    queue.push_front(currentEDT->parent);
+                    queue.push_back(currentEDT->parent);
                 }
             }
         }
     }
-    
+
     if (srcNodeMap.empty()) {
         return true;
     } else {
