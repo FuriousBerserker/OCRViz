@@ -15,10 +15,11 @@
 #include "viz-util.hpp"
 
 //#define DEBUG 1
-//#define OUTPUT_CG 0
-#define INSTRUMENT 1
-#define DETECT_RACE 1
-#define MEASURE_TIME 1
+//#define OUTPUT_CG 1
+//#define INSTRUMENT 1
+//#define DETECT_RACE 1
+//#define MEASURE_TIME 1
+//#define RECORD_OP_NUM 1
 #define START_EPOCH 0
 using namespace ::std;
 
@@ -157,7 +158,15 @@ class Cache {
 };
 
 // measure time
+#if MEASURE_TIME
 clock_t program_start, program_end;
+#endif
+
+//measure op amount
+#if RECORD_OP_NUM
+u64 read_num = 0;
+u64 write_num = 0;
+#endif
 
 // CG
 map<NodeKey, Node*, NodeKeyComparator> computationGraph;
@@ -182,6 +191,10 @@ string userCodeImg;
 
 // thread local information
 ThreadLocalStore tls;
+
+unsigned res_time = 0;
+
+void CG2Dot();
 
 ColorScheme::ColorScheme(string color, string style)
     : color(color), style(style) {}
@@ -355,6 +368,7 @@ void ThreadLocalStore::initializeAcquiredDB(u32 depc, ocrEdtDep_t* depv) {
     for (u32 i = 0; i < depc; i++) {
         if (depv[i].ptr) {
             acquiredDB.push_back(dbMap[depv[i].guid.guid]);
+            assert(dbMap[depv[i].guid.guid]->startAddress == (uintptr_t)depv[i].ptr);
         }
     }
     sort(acquiredDB.begin(), acquiredDB.end(), compareDB);
@@ -457,6 +471,14 @@ void outputRaceInfo(ADDRINT ip1, bool ip1IsRead, ADDRINT ip2, bool ip2IsRead,
  */
 bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip, uintptr_t addr, bool isSrcRead, bool isDestRead) {
 
+#if RECORD_OP_NUM
+    if (isDestRead) {
+        read_num++;
+    } else {
+        write_num++;
+    }
+#endif
+ 
     map<Node*, u16> srcNodeMap; 
     for (vector<AccessRecord*>::iterator si = srcs.begin(), se = srcs.end(); si != se; si++) {
         AccessRecord* ar = *si;
@@ -471,7 +493,7 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip, uintptr
             } else {
                 // check spawn relationship by tree traversal
                 EDTNode* src = static_cast<EDTNode*>(computationGraph[ar->edtKey]);
-                EDTNode* descendant = dest;
+                /*EDTNode* descendant = dest;
                 bool requireGraphTravesal = true;
                 u16 spawnEpoch;
                 do {
@@ -491,7 +513,8 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip, uintptr
                     srcNodeMap.insert(make_pair(src, ar->epoch));
                 } else {
                     cache.insertRecord(cacheKey, spawnEpoch);
-                }
+                }*/
+		srcNodeMap.insert(make_pair(src, ar->epoch));
             }
         }
     }
@@ -500,10 +523,14 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip, uintptr
     if (!srcNodeMap.empty()) {
         set<Node*> accessedNodes;
         list<Node*> queue;
+        list<unsigned> depth;
         queue.push_back(dest);
+        depth.push_back(0);
         while (!queue.empty() && !srcNodeMap.empty()) {
             Node* current = queue.front();
             queue.pop_front();
+            unsigned currentDepth = depth.front() + 1;
+            depth.pop_front();
             //            cout << "id is " << current->id << endl;
             if (accessedNodes.find(current) == accessedNodes.end()) {
                 accessedNodes.insert(current);
@@ -520,10 +547,13 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip, uintptr
                         srcNodeMap.erase(dependence);
                         CacheKey key = {dependence->id, dest->id};
                         cache.insertRecord(key, static_cast<EDTNode*>(dependence)->getEpoch());
-                        dest->addDependence(dependence);
+                        if (currentDepth > 1) {
+                            dest->incomingEdges.push_front(dependence);
+                        }
                     }
                 }
                 queue.push_back(dependence);
+                depth.push_back(currentDepth);
             }
 
             //tackle parent
@@ -537,14 +567,27 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip, uintptr
                                 srcNodeMap.erase(currentEDT->parent);
                                 CacheKey key = {currentEDT->parent->id, dest->id};
                                 cache.insertRecord(key, i);
+                                
+                                if (currentDepth > 1) {
+                                    dest->incomingEdges.push_front(currentEDT->parent);
+                                }
                                 break;
                             }
                         }
                     }
                     queue.push_back(currentEDT->parent);
+                    depth.push_back(currentDepth);
                 }
             }
         }
+        //res_time++;
+        //cout << res_time << ", accessed nodes = " << accessedNodes.size() << endl;
+        //int32_t line, column;
+        //string file;
+        //PIN_LockClient();
+        //PIN_GetSourceLocation(ip, &column, &line, &file);
+        //PIN_UnlockClient();
+        //cout << file << " : " << line << " : " << column << endl;
     }
 
     if (srcNodeMap.empty()) {
@@ -808,6 +851,9 @@ void CG2Dot() {
     out.open("cg.dot");
     out << "digraph ComputationGraph {" << endl;
     cout << "total node num: " << computationGraph.size() << endl;
+    u64 edtNum = 0;
+    u64 eventNum = 0;
+    u64 dbNum = 0;
     for (map<NodeKey, Node *>::iterator ci = computationGraph.begin(),
                                         ce = computationGraph.end();
          ci != ce; ci++) {
@@ -822,8 +868,16 @@ void CG2Dot() {
         } else {
             out << '\"' << node->id << '\"' << nodeColor << ";" << endl;
         }
+        if (node->type == Node::EDT) {
+            edtNum++;
+        } else if (node->type == Node::DB) {
+            dbNum++;
+        } else if (node->type == Node::EVENT) {
+            eventNum++;
+        } 
     }
 
+    cout << "edt = " << edtNum << ", db = " << dbNum << ", event = " << eventNum << endl;
     for (map<NodeKey, Node *>::iterator ci = computationGraph.begin(),
                                         ce = computationGraph.end();
          ci != ce; ci++) {
@@ -884,6 +938,10 @@ void fini(int32_t code, void* v) {
     double time_span = program_end - program_start;
     time_span /= CLOCKS_PER_SEC;
     cout << "elapsed time: " << time_span << " seconds" << endl;
+#endif
+
+#if RECORD_OP_NUM
+    cout << "read: " << read_num << ", write: " << write_num << endl;
 #endif
 }
 
