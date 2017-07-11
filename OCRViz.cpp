@@ -16,9 +16,9 @@
 
 //#define DEBUG 1
 //#define OUTPUT_CG 1
-//#define INSTRUMENT 1
-//#define DETECT_RACE 1
-//#define MEASURE_TIME 1
+#define INSTRUMENT 1
+#define DETECT_RACE 1
+#define MEASURE_TIME 1
 //#define RECORD_OP_NUM 1
 #define START_EPOCH 0
 using namespace ::std;
@@ -40,7 +40,7 @@ class Node {
 
    public:
     intptr_t id;
-    list<Node*> incomingEdges;
+    set<Node*> incomingEdges;
     Type type;
 
     Node(intptr_t id, Type type);
@@ -211,7 +211,7 @@ Node::Node(intptr_t id, Node::Type type) : id(id), type(type) {}
 
 Node::~Node() {}
 
-inline void Node::addDependence(Node* node) { incomingEdges.push_back(node); }
+inline void Node::addDependence(Node* node) { incomingEdges.insert(node); }
 
 EDTNode::EDTNode(intptr_t id, EDTNode* parent)
     : Node(id, Node::EDT), parent(parent) {}
@@ -514,7 +514,7 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip, uintptr
                 } else {
                     cache.insertRecord(cacheKey, spawnEpoch);
                 }*/
-		srcNodeMap.insert(make_pair(src, ar->epoch));
+                srcNodeMap.insert(make_pair(src, ar->epoch));
             }
         }
     }
@@ -523,39 +523,29 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip, uintptr
     if (!srcNodeMap.empty()) {
         set<Node*> accessedNodes;
         list<Node*> queue;
-        list<unsigned> depth;
         queue.push_back(dest);
-        depth.push_back(0);
         while (!queue.empty() && !srcNodeMap.empty()) {
             Node* current = queue.front();
             queue.pop_front();
-            unsigned currentDepth = depth.front() + 1;
-            depth.pop_front();
             //            cout << "id is " << current->id << endl;
             if (accessedNodes.find(current) == accessedNodes.end()) {
                 accessedNodes.insert(current);
             } else {
                 continue;
             }
-            
-            //tackle dependence
-            for (list<Node*>::iterator li = current->incomingEdges.begin(), le = current->incomingEdges.end(); li != le; li++) {
-                Node* dependence = *li;
-                if (dependence->type == Node::EDT) {
-                    map<Node*, u16>::iterator si = srcNodeMap.find(dependence);
-                    if (si != srcNodeMap.end()) {
-                        srcNodeMap.erase(dependence);
-                        CacheKey key = {dependence->id, dest->id};
-                        cache.insertRecord(key, static_cast<EDTNode*>(dependence)->getEpoch());
-                        if (currentDepth > 1) {
-                            dest->incomingEdges.push_front(dependence);
-                        }
-                    }
-                }
-                queue.push_back(dependence);
-                depth.push_back(currentDepth);
-            }
+           
+            for (map<Node*, u16>::iterator si = srcNodeMap.begin(), se = srcNodeMap.end(); si != se; si++) {
+               Node* dependence = si->first;
+               if (current->incomingEdges.find(dependence) != current->incomingEdges.end()) {
+                srcNodeMap.erase(dependence);
+                CacheKey key = {dependence->id, dest->id};
+                cache.insertRecord(key, static_cast<EDTNode*>(dependence)->getEpoch());
+                dest->addDependence(dependence);
 
+               }
+            }
+            //tackle dependence
+            queue.insert(queue.end(), current->incomingEdges.begin(), current->incomingEdges.end());
             //tackle parent
             if (current->type == Node::EDT) {
                 EDTNode* currentEDT = static_cast<EDTNode*>(current);
@@ -568,15 +558,12 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip, uintptr
                                 CacheKey key = {currentEDT->parent->id, dest->id};
                                 cache.insertRecord(key, i);
                                 
-                                if (currentDepth > 1) {
-                                    dest->incomingEdges.push_front(currentEDT->parent);
-                                }
+                                //dest->addDependence(currentEDT->parent);
                                 break;
                             }
                         }
                     }
                     queue.push_back(currentEDT->parent);
-                    depth.push_back(currentDepth);
                 }
             }
         }
@@ -894,7 +881,7 @@ void CG2Dot() {
                            START_EPOCH, Node::SPAWN);
             }
 
-            for (list<Node *>::iterator ni = edtNode->incomingEdges.begin(),
+            for (set<Node *>::iterator ni = edtNode->incomingEdges.begin(),
                                         ne = edtNode->incomingEdges.end();
                  ni != ne; ni++) {
                 Node* incomingNode = *ni;
@@ -906,7 +893,7 @@ void CG2Dot() {
                            edtNode, START_EPOCH, Node::JOIN);
             }
         } else {
-            for (list<Node *>::iterator ni = node->incomingEdges.begin(),
+            for (set<Node *>::iterator ni = node->incomingEdges.begin(),
                                         ne = node->incomingEdges.end();
                  ni != ne; ni++) {
                 Node* incomingNode = *ni;
