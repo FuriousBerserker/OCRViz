@@ -51,6 +51,7 @@ class Node {
 class EDTNode : public Node {
    public:
     vector<EDTNode*> spawnEdges;
+    map<EDTNode*, u16> spawnMaps;
     EDTNode* parent;
     EDTNode(intptr_t id, EDTNode* parent);
     virtual ~EDTNode();
@@ -218,7 +219,10 @@ EDTNode::EDTNode(intptr_t id, EDTNode* parent)
 
 EDTNode::~EDTNode() {}
 
-inline void EDTNode::addSpawnEdges(EDTNode* node) { spawnEdges.push_back(node); }
+inline void EDTNode::addSpawnEdges(EDTNode* node) { 
+    spawnMaps.insert(make_pair(node, spawnEdges.size()));
+    spawnEdges.push_back(node); 
+}
 
 inline Node* EDTNode::getSpawnEdge(u16 epoch) {
 //    assert(spawnEdges.size() > epoch);
@@ -552,15 +556,12 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip, uintptr
                 if (currentEDT->parent) {
                     map<Node*, u16>::iterator si = srcNodeMap.find(currentEDT->parent);
                     if (si != srcNodeMap.end()) {
-                        for (u16 i = si->second; i < currentEDT->parent->getEpoch(); i++) {
-                            if (currentEDT == currentEDT->parent->spawnEdges[i]) {
-                                srcNodeMap.erase(currentEDT->parent);
-                                CacheKey key = {currentEDT->parent->id, dest->id};
-                                cache.insertRecord(key, i);
-                                
-                                //dest->addDependence(currentEDT->parent);
-                                break;
-                            }
+                        u16 findEpoch = currentEDT->parent->spawnMaps.find(currentEDT)->second; 
+                        if (findEpoch >= si->second) {
+                            srcNodeMap.erase(currentEDT->parent);
+                            CacheKey key = {currentEDT->parent->id, dest->id};
+                            cache.insertRecord(key, findEpoch);    
+                            //dest->addDependence(currentEDT->parent);
                         }
                     }
                     queue.push_back(currentEDT->parent);
