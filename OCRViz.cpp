@@ -20,6 +20,7 @@
 #define DETECT_RACE 1
 #define MEASURE_TIME 1
 //#define RECORD_OP_NUM 1
+#define RECORD_CACHE_HIT 1
 #define START_EPOCH 0
 using namespace ::std;
 
@@ -167,6 +168,12 @@ clock_t program_start, program_end;
 #if RECORD_OP_NUM
 u64 read_num = 0;
 u64 write_num = 0;
+#endif
+
+//measure cache hit
+#if RECORD_CACHE_HIT
+u64 cache_hit = 0;
+u64 cache_miss = 0; 
 #endif
 
 // CG
@@ -522,7 +529,12 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip, uintptr
             }
         }
     }
-    
+
+#if RECORD_CACHE_HIT
+cache_miss += srcNodeMap.size();
+cache_hit += (srcs.size() - srcNodeMap.size());
+#endif
+
     //check happens-before relationship by graph traversal
     if (!srcNodeMap.empty()) {
         set<Node*> accessedNodes;
@@ -930,6 +942,10 @@ void fini(int32_t code, void* v) {
 
 #if RECORD_OP_NUM
     cout << "read: " << read_num << ", write: " << write_num << endl;
+#endif
+
+#if RECORD_CACHE_HIT
+    cout << "cache miss = " << cache_miss << ", cache hit = " << cache_hit << endl;
 #endif
 }
 
