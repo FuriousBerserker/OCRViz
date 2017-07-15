@@ -119,6 +119,7 @@ class ThreadLocalStore {
    public:
     EDTNode* currentEdt;
     u16 epoch;
+    bool hasSpawn;
     vector<DBPage*> acquiredDB;
     void initializeAcquiredDB(u32 dpec, ocrEdtDep_t* depv);
     void insertDB(ocrGuid_t& guid);
@@ -584,8 +585,8 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip,
                             Node* between = dependence;
                             u64 maxDegree = dependence->incomingEdges.size();
                             Step* s = currentStep->previous;
-                            while (s) {
-                                if (s->node->incomingEdges.size() > maxDegree) {
+                            while (s->node != dest) {
+                                if (s->node->fakeEdges.find(dependence) == s->node->fakeEdges.end() && s->node->incomingEdges.size() >= maxDegree) {
                                     maxDegree = s->node->incomingEdges.size();
                                     between = s->node;
                                 }
@@ -616,8 +617,8 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip,
                             Node* between = dependence;
                             u64 maxDegree = dependence->incomingEdges.size();
                             Step* s = currentStep->previous;
-                            while (s) {
-                                if (s->node->incomingEdges.size() > maxDegree) {
+                            while (s->node != dest) {
+                                if (s->node->fakeEdges.find(dependence) == s->node->fakeEdges.end() && s->node->incomingEdges.size() >= maxDegree) {
                                     maxDegree = s->node->incomingEdges.size();
                                     between = s->node;
                                 }
@@ -651,8 +652,8 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip,
                                     Node* between = currentEDT;
                                     u64 maxDegree = between->incomingEdges.size();
                                     Step* s = currentStep->previous;
-                                    while (s) {
-                                        if (s->node->incomingEdges.size() >
+                                    while (s->node != dest) {
+                                        if (s->node->fakeEdges.find(currentEDT) == s->node->fakeEdges.end() && s->node->incomingEdges.size() >=
                                             maxDegree) {
                                             maxDegree =
                                                 s->node->incomingEdges.size();
@@ -679,13 +680,7 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip,
                     new Step(*ei, currentStep, currentStep->depth + 1));
             }
 
-            // tackle dependence
-            for (set<Node *>::iterator ei = current->incomingEdges.begin(),
-                                       ee = current->incomingEdges.end();
-                 ei != ee; ei++) {
-                queue.push_back(
-                    new Step(*ei, currentStep, currentStep->depth + 1));
-            }
+
             // tackle parent
             if (current->type == Node::EDT) {
                 EDTNode* currentEDT = static_cast<EDTNode*>(current);
@@ -693,6 +688,14 @@ bool isReachable(vector<AccessRecord*>& srcs, EDTNode* dest, ADDRINT ip,
                     queue.push_back(new Step(currentEDT->parent, currentStep,
                                              currentStep->depth + 1));
                 }
+            }
+
+            // tackle dependence
+            for (set<Node *>::iterator ei = current->incomingEdges.begin(),
+                                       ee = current->incomingEdges.end();
+                 ei != ee; ei++) {
+                queue.push_back(
+                    new Step(*ei, currentStep, currentStep->depth + 1));
             }
         }
         // res_time++;
@@ -793,6 +796,7 @@ inline void initializeTLS(ocrGuid_t& edtGuid, u32 depc, ocrEdtDep_t* depv,
     tls.currentEdt = static_cast<EDTNode*>(computationGraph[edtKey]);
     tls.epoch = START_EPOCH;
     tls.initializeAcquiredDB(depc, depv);
+    tls.hasSpawn = false;
 }
 // void argsMainEdt(u32 paramc, u64* paramv, u32 depc, ocrEdtDep_t depv[]) {
 //#if DEBUG
@@ -835,7 +839,8 @@ void afterEdtCreate(ocrGuid_t guid, ocrGuid_t templateGuid, u32 paramc,
         tls.currentEdt->addSpawnEdges(newEdtNode);
         tls.epoch++;
     }
-
+    tls.hasSpawn = true;
+    
 #if DEBUG
     cout << "afterEdtCreate finish" << endl;
 #endif
