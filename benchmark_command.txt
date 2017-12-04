@@ -1,0 +1,11 @@
+pin -t obj-intel64/OCRViz.so -- /home/berserker/main/src/ocr-1.1/xstg/apps/apps/nqueens/refactored/ocr/install/x86/nqueens 13 5
+
+pin -t obj-intel64/OCRViz.so -- /home/berserker/main/src/ocr-1.1/xstg/apps/apps/RSBench/refactored/ocr/intel/install/x86/RSBench -d -s small -l 10000
+
+pin -t obj-intel64/OCRViz.so -- /home/berserker/main/src/ocr-1.1/xstg/apps/apps/uts-1.1/ocr/install/x86/uts
+
+pin -t obj-intel64/OCRViz.so -- /home/berserker/main/src/ocr-1.1/xstg/apps/apps/XSBench/refactored/ocr/intel/install/x86/XSBench -s small -g 100 -l 10000
+
+pin -t obj-intel64/OCRViz.so -- /home/berserker/main/src/ocr-1.1/xstg/apps/apps/reduction/refactored/ocr/intel/install/x86/driver 4 4 10
+
+pit -t obj-intel64/OCRViz.so --/home/berserker/main/src/ocr-1.1/xstg/apps/apps/examples/cholesky/install/x86/cholesky --ds 100 --ts 10 --ps 1 --fi /home/berserker/main/src/ocr-1.1/xstg/apps/apps/cholesky/datasets/m_100.in

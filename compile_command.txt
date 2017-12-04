@@ -1,0 +1,19 @@
+gcc -g -O0 -I /home/berserker/main/src/ocr-1.1/xstg/ocr/ocr/install/include/ -L $OCR_INSTALL/lib -locr_x86 fork-join.c -lpthread
+
+
+
+
+gcc -g -O0 -I /home/berserker/main/src/ocr-1.1/xstg/apps/apps/libs/install/x86/include -I /home/berserker/main/src/ocr-1.1/xstg/ocr/ocr/install/include/ -L $OCR_INSTALL/lib -locr_x86 quicksort.c -lpthread
+
+Use COUNTED_MAP guid 
+
+use the python script in /home/berserker/main/src/ocr-1.1/xstg/ocr/ocr/install/share/ocr/scripts/Configs
+
+python config-generator.py --guid COUNTED_MAP
+
+Then set this .cfg file into OCR_CONFIG and use it as OCR'S default configuration.
+
+
+pin -t obj-intel64/OCRViz.so -- /home/berserker/main/src/ocr-1.1/xstg/apps/apps/examples/cholesky/install/x86/cholesky --ds 100 --ts 10 --ps 1 --fi /home/berserker/main/src/ocr-1.1/xstg/apps/apps/cholesky/datasets/m_100.in
+
+pin -t obj-intel64/OCRViz.so -- /home/berserker/main/src/ocr-1.1/xstg/apps/apps/examples/smith-waterman/install/x86/smithwaterman 10 10 /home/berserker/main/src/ocr-1.1/xstg/apps/apps/smithwaterman/datasets/string1-medium.txt /home/berserker/main/src/ocr-1.1/xstg/apps/apps/smithwaterman/datasets/string2-medium.txt /home/berserker/main/src/ocr-1.1/xstg/apps/apps/smithwaterman/datasets/score-medium.txt
